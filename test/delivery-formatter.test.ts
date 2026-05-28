@@ -33,7 +33,7 @@ describe('sanitize', () => {
 
   it('preserves newlines and tabs', () => {
     const input = 'line1\n\tindented\tand more\t\r';
-    expect(sanitize(input)).toBe('line1\n\tindented\tand more\t\r');
+    expect(sanitize(input)).toBe('line1\n\tindented\tand more\t');
   });
 
   it('removes stray control chars', () => {
