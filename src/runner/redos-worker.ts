@@ -1,14 +1,17 @@
-import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
+import { Worker } from 'worker_threads';
+import {
+  REDOS_MAX_CONCURRENT,
+  REDOS_MAX_QUEUED_PER_MONITOR,
+  REDOS_TIMEOUT_MS,
+} from '../limits.js';
 
 // ----------------------------------------------------------------
-// Limits (inline to avoid TSX `.js` → `.ts` resolution issues in tests)
-// ----------------------------------------------------------------
-
-const REDOS_TIMEOUT_MS = 100;
-const REDOS_MAX_CONCURRENT = 4;
-const REDOS_MAX_QUEUED_PER_MONITOR = 10;
-
-export { REDOS_TIMEOUT_MS, REDOS_MAX_CONCURRENT, REDOS_MAX_QUEUED_PER_MONITOR };
+// Re-export limits for callers that import them from this module.
+export {
+  REDOS_MAX_CONCURRENT,
+  REDOS_MAX_QUEUED_PER_MONITOR,
+  REDOS_TIMEOUT_MS,
+} from '../limits.js';
 
 // ----------------------------------------------------------------
 // Errors
@@ -18,23 +21,6 @@ export class RedosTimeoutError extends Error {
   constructor(message?: string) {
     super(message ?? 'ReDoS regex check timed out');
     this.name = 'RedosTimeoutError';
-  }
-}
-
-// ----------------------------------------------------------------
-// Worker thread — cheap regex execution
-// ----------------------------------------------------------------
-
-if (isMainThread === false) {
-  const data = workerData as { pattern: string; flags: string; text: string };
-  try {
-    const re = new RegExp(data.pattern, data.flags);
-    const matched = re.test(data.text);
-    parentPort?.postMessage({ ok: true as const, matched } as WorkerMessage);
-  } catch (err) {
-    parentPort?.postMessage(
-      { ok: false as const, error: err instanceof Error ? err.message : String(err) } as WorkerMessage,
-    );
   }
 }
 
@@ -69,6 +55,10 @@ class WorkerPool {
   #pool = new Set<Worker>();
   #pending = 0;
   #queue: QueueEntry[] = [];
+  #workerUrl = new URL(
+    import.meta.url.endsWith('.ts') ? 'redos-thread.ts' : 'redos-thread.js',
+    import.meta.url,
+  );
 
   post(pattern: string, flags: string, text: string, timeoutMs: number): Promise<WorkerResult> {
     if (this.#pending < REDOS_MAX_CONCURRENT) {
@@ -107,7 +97,7 @@ class WorkerPool {
     this.#pending += 1;
 
     const worker = new Worker(
-      new URL('redos-worker.ts', import.meta.url),
+      this.#workerUrl,
       { workerData: { pattern, flags, text } },
     );
     this.#pool.add(worker);
