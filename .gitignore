@@ -20,3 +20,6 @@ Thumbs.db
 
 # Serena state
 .serena/
+
+# Git worktrees
+.worktrees/
