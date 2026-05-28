@@ -190,4 +190,25 @@ describe('ReDoSWorker', () => {
     expect(await w2.test('b', '', 'b')).toBe(true);
     await w2.close();
   });
+
+  it('close() settles active and queued checks', async () => {
+    const w = new ReDoSWorker();
+    const slowPattern = '^(a+)+$';
+    const slowText = `${'a'.repeat(32)}!`;
+
+    const active = Array.from({ length: REDOS_MAX_CONCURRENT }, () =>
+      w.test(slowPattern, '', slowText, 10_000),
+    );
+    const queued = w.test('queued', '', 'queued', 10_000);
+    const allSettled = Promise.allSettled([...active, queued]);
+
+    await w.close();
+
+    const settled = await Promise.race([
+      allSettled,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+    expect(settled).not.toBe('timeout');
+    expect((settled as PromiseSettledResult<boolean>[]).every((r) => r.status === 'rejected')).toBe(true);
+  });
 });

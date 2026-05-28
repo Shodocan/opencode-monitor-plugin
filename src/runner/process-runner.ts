@@ -195,6 +195,19 @@ export class ProcessRunner extends EventEmitter {
   ): void {
     let buffer = '';
     let seq = 0;
+    let pendingEmptyLines = 0;
+
+    const emitLine = (line: string) => {
+      this.#emit(jobID, type, ++seq, line);
+      tails.get(type)!.add(line);
+    };
+
+    const flushPendingEmptyLines = () => {
+      while (pendingEmptyLines > 0) {
+        emitLine('');
+        pendingEmptyLines -= 1;
+      }
+    };
 
     stream.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
@@ -203,30 +216,20 @@ export class ProcessRunner extends EventEmitter {
       while ((idx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
-        // Trailing-empty suppression: if the line is empty and nothing
-        // follows (no more data pending, buffer is empty), drop it.
         if (line.length === 0) {
-          const more = stream.read();
-          if (more !== null) {
-            this.#emit(jobID, type, ++seq, line);
-            tails.get(type)!.add(line);
-          } else if (buffer.length > 0) {
-            this.#emit(jobID, type, ++seq, line);
-            tails.get(type)!.add(line);
-          }
-          // else: truly trailing newline at EOF — skip
+          pendingEmptyLines += 1;
           continue;
         }
-        this.#emit(jobID, type, ++seq, line);
-        tails.get(type)!.add(line);
+        flushPendingEmptyLines();
+        emitLine(line);
       }
     });
 
     stream.once('end', () => {
       // Flush any remaining partial line (no trailing newline).
       if (buffer.length > 0) {
-        this.#emit(jobID, type, ++seq, buffer);
-        tails.get(type)!.add(buffer);
+        flushPendingEmptyLines();
+        emitLine(buffer);
       }
     });
   }

@@ -130,6 +130,7 @@ class WorkerPool {
       });
 
       worker.once('exit', () => {
+        settle(false, new RedosTimeoutError('worker closed'));
         this.#freeSlot(worker);
       });
     });
@@ -154,7 +155,10 @@ class WorkerPool {
   }
 
   close(): Promise<void> {
-    this.#queue.forEach((e) => clearTimeout(e.timer));
+    this.#queue.forEach((e) => {
+      clearTimeout(e.timer);
+      e.reject(new RedosTimeoutError('worker closed'));
+    });
     this.#queue.length = 0;
     const promises: Promise<void>[] = [];
     for (const w of this.#pool) {

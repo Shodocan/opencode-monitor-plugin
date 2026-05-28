@@ -173,6 +173,18 @@ describe('ProcessRunner', () => {
     runner.dispose(id);
   });
 
+  it('preserves non-trailing blank output lines', async () => {
+    const id = 'blank-lines';
+    const events: OutputEvent[] = [];
+    runner.on('output', (ev) => {
+      if (ev.jobID === id && ev.stream === 'stdout') events.push(ev);
+    });
+    const { exitPromise } = runner.run(id, "printf 'first\\n\\n'; sleep 0.1; printf 'second\\n'");
+    await exitPromise;
+    expect(events.map((e) => e.line)).toEqual(['first', '', 'second']);
+    runner.dispose(id);
+  });
+
   // -- Tail buffer --------------------------------------------
 
   it('stores rolling tail lines within cap', async () => {
