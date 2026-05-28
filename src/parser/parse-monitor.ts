@@ -102,7 +102,7 @@ export function parseMonitor(raw: string): {
       before = n;
     } else if (seg.startsWith('after ')) {
       const n = Number(seg.slice(6).trim());
-      if (!Number.isInteger(n) || n < 0 || n > 200)
+      if (!Number.isInteger(n) || n < 0 || n > MAX_MONITOR_CONTEXT_LINES)
         throw new Error(`parseMonitor: --after must be 0..${MAX_MONITOR_CONTEXT_LINES}, got ${n}`);
       after = n;
     } else if (seg.startsWith('debounce ')) {

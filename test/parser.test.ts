@@ -109,18 +109,10 @@ describe('parseMonitor', () => {
       expect(r.regex.flags).toBe('i');
     });
 
-    it('three backslashes before slash escapes it (odd count)', () => {
-      // JS source '/a\\\\\\//i' — need 6 backslash-chars for 3 actual backslashes, but
-      // the source I wrote '/a\\\\\\//i' actually only has 2 backslashes (length=7).
-      // Use proper JS: 3 backslashes = '\\\\\\\\' in source → total '/a\\\\\\\\//i'
-      // Wait: '\\\\\\' = 3 backslashes, so full: '/a\\\\\\//i'
-      // Let's count: '\\\\' '//' 'i' — actually just 2 bs. Use '\\\\\\\\' (6) for 3 bs.
-      // Correct source for 3 bs: '/a\\\\\\\\//i'
-      const r = parseMonitor('--regex /a\\\\\\\\/i -- echo ok');
-      // No — that's only 2 bs again. Need 6 backslash chars for 3 actual backslashes.
-      // 6 backslash chars: '\\\\' = '\\\\' (4 chars = 2 bs), need '\\\\\\\\' = 6 chars = 3 bs
-      const input = '--regex /a\\\\\\\\\\//i -- echo ok';
-      const raw = input.slice(input.indexOf('/'), input.indexOf('-- echo') - 1);
+    it('escaped slash remains inside delimited regex pattern', () => {
+      const r = parseMonitor('--regex /a\\/b/i -- echo ok');
+      expect(r.regex.source).toBe('a\\/b');
+      expect(r.regex.flags).toBe('i');
     });
   });
 });
