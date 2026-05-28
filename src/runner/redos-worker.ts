@@ -42,6 +42,17 @@ if (isMainThread === false) {
 // Pool
 // ----------------------------------------------------------------
 
+interface QueueEntry {
+  resolve: (v: WorkerResult) => void;
+  reject: (e: Error) => void;
+  pattern: string;
+  flags: string;
+  text: string;
+  timeoutMs: number;
+  timer: ReturnType<typeof setTimeout>;
+  isTimedOut(): boolean;
+}
+
 interface WorkerResult {
   ok: true;
   matched: boolean;
@@ -57,15 +68,7 @@ type WorkerMessage = WorkerResult | WorkerError;
 class WorkerPool {
   #pool = new Set<Worker>();
   #pending = 0;
-  #queue: Array<{
-    resolve: (v: WorkerResult) => void;
-    reject: (e: Error) => void;
-    pattern: string;
-    flags: string;
-    text: string;
-    timeoutMs: number;
-    timer: ReturnType<typeof setTimeout>;
-  }> = [];
+  #queue: QueueEntry[] = [];
 
   post(pattern: string, flags: string, text: string, timeoutMs: number): Promise<WorkerResult> {
     if (this.#pending < REDOS_MAX_CONCURRENT) {
@@ -74,16 +77,24 @@ class WorkerPool {
     if (this.#queue.length >= REDOS_MAX_QUEUED_PER_MONITOR) {
       throw new RedosTimeoutError('ReDoS queue full');
     }
+    let timedOut = false;
     return new Promise<WorkerResult>((resolve, reject) => {
-      this.#queue.push({
+      const entry: QueueEntry = {
         resolve,
         reject,
         pattern,
         flags,
         text,
         timeoutMs,
-        timer: setTimeout(() => reject(new RedosTimeoutError()), timeoutMs),
-      });
+        timer: setTimeout(() => {
+          timedOut = true;
+          const idx = this.#queue.indexOf(entry);
+          if (idx !== -1) this.#queue.splice(idx, 1);
+          reject(new RedosTimeoutError());
+        }, timeoutMs),
+        isTimedOut() { return timedOut; },
+      };
+      this.#queue.push(entry);
     });
   }
 
@@ -138,8 +149,14 @@ class WorkerPool {
     if (!this.#pool.has(worker)) return;
     this.#pool.delete(worker);
     if (this.#pending > 0) this.#pending -= 1;
-    if (this.#queue.length > 0 && this.#pending < REDOS_MAX_CONCURRENT) {
+    // Drain the head of the queue, skipping entries that already timed out.
+    while (this.#queue.length > 0 && this.#pending < REDOS_MAX_CONCURRENT) {
       const entry = this.#queue.shift()!;
+      if (entry.isTimedOut()) {
+        // The promise already rejected; skip and try the next entry.
+        clearTimeout(entry.timer);
+        continue;
+      }
       clearTimeout(entry.timer);
       this.#run(entry.pattern, entry.flags, entry.text, entry.timeoutMs)
         .then(entry.resolve, entry.reject);

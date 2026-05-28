@@ -122,6 +122,65 @@ describe('ReDoSWorker', () => {
     await worker.close();
   });
 
+  // -- Queue staleness ------------------------------------------
+
+  it('cleans timed-out queue entries and serves fresh new requests', async () => {
+    const w = new ReDoSWorker();
+
+    // 1. Saturate all concurrent slots with very short timeout workers.
+    const saturate = Array.from({ length: REDOS_MAX_CONCURRENT }, () =>
+      w.test('slow', '', 'a'.repeat(100_000), 1),
+    );
+
+    // 2. Fill the queue with entries that time out before any worker frees a slot.
+    const queueEntries: Promise<boolean>[] = Array.from(
+      { length: REDOS_MAX_QUEUED_PER_MONITOR },
+      (_, i) => w.test('q' + i, '', 'q' + i, 1),
+    );
+
+    // 3. Workers finish → freeSlot drains stale queue entries.
+    await Promise.allSettled(saturate);
+
+    // 4. Queue entries are rejected by their own timers.
+    await Promise.allSettled(queueEntries);
+
+    // 5. A fresh request must succeed — queue is clean.
+    const result = await w.test('final', '', 'final');
+    expect(result).toBe(true);
+    await w.close();
+  });
+
+  // -- Queue staleness: explicit size after timeout ------------
+
+  it('new requests see clean queue after mass queue-timeout', async () => {
+    const w = new ReDoSWorker();
+
+    // Block all workers with a pattern that will genuinely take > 200ms.
+    const blocker = Array.from({ length: REDOS_MAX_CONCURRENT }, () =>
+      w.test('long', '', 'abc'.repeat(500_000), 200),
+    );
+
+    // Fill the queue entirely with entries that time out in 2ms.
+    const queued = Array.from({ length: REDOS_MAX_QUEUED_PER_MONITOR }, () =>
+      w.test('quick', '', 'q', 2),
+    );
+
+    // The very next call must throw because queue is full.
+    expect(() => w.test('overflow', '', 'x')).toThrow('ReDoS queue full');
+
+    // Queue entries time out before workers finish; they must be removed from #queue.
+    const settled = await Promise.allSettled(queued);
+    expect(settled.every((r) => r.status === 'rejected')).toBe(true);
+
+    // Workers finish → freed slots drain stale entries, not re-run them.
+    await Promise.allSettled(blocker);
+
+    // A fresh request must succeed.
+    const ok = await w.test('recovery', '', 'recovery');
+    expect(ok).toBe(true);
+    await w.close();
+  });
+
   // -- close() -------------------------------------------------
 
   it('close() shuts down pool and allows new instance', async () => {
