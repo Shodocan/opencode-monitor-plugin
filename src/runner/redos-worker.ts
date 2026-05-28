@@ -1,18 +1,54 @@
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
-import {
-  REDOS_MAX_CONCURRENT,
-  REDOS_MAX_QUEUED_PER_MONITOR,
-  REDOS_TIMEOUT_MS,
-} from '../limits.js';
 import type { JobKind, OutputStream } from '../types.js';
+
+// ----------------------------------------------------------------
+// Worker-side constants — inlined (ESM imports don't work in Worker threads)
+// ----------------------------------------------------------------
+export const REDOS_TIMEOUT_MS = 100;
+export const REDOS_MAX_CONCURRENT = 4;
+export const REDOS_MAX_QUEUED_PER_MONITOR = 10;
 
 // ----------------------------------------------------------------
 // Errors
 // ----------------------------------------------------------------
 
 export class RedosTimeoutError extends Error {
-  constructor(message = 'ReDoS regex check timed out') {
-    super(message);
+  constructor(message?: string) {
+    super(message ?? 'ReDoS regex check timed out');
+    this.name = 'RedosTimeoutError';
+  }
+}
+
+// ----------------------------------------------------------------
+// Worker thread — cheap regex execution
+// ----------------------------------------------------------------
+
+if (isMainThread === false) {
+  const data = workerData as { pattern: string; text: string };
+  try {
+    const re = new RegExp(data.pattern);
+    const matched = re.test(data.text);
+    parentPort?.postMessage({ ok: true as const, matched } as WorkerMessage);
+  } catch (err) {
+    parentPort?.postMessage({ ok: false as const, error: err instanceof Error ? err.message : String(err) } as WorkerMessage);
+  }
+}
+
+// ----------------------------------------------------------------
+// Pool
+// ----------------------------------------------------------------
+// Worker-side timeout (inlined because ESM imports don't work in Worker threads)
+// ----------------------------------------------------------------
+
+const REDOS_TIMEOUT_MS_INLINE = 100;
+
+// ----------------------------------------------------------------
+// Errors
+// ----------------------------------------------------------------
+
+export class RedosTimeoutError extends Error {
+  constructor(message?: string) {
+    super(message ?? 'ReDoS regex check timed out');
     this.name = 'RedosTimeoutError';
   }
 }
@@ -48,6 +84,11 @@ interface WorkerError {
 
 type WorkerMessage = WorkerResult | WorkerError;
 
+const REDOS_MAX_CONCURRENT = 4;
+const REDOS_MAX_QUEUED_PER_MONITOR = 10;
+
+export { REDOS_TIMEOUT_MS_INLINE as REDOS_TIMEOUT_MS, REDOS_MAX_CONCURRENT, REDOS_MAX_QUEUED_PER_MONITOR };
+
 class WorkerPool {
   #pool = new Set<Worker>();
   #pending = 0;
@@ -60,18 +101,20 @@ class WorkerPool {
   }> = [];
 
   post(pattern: string, text: string, timeoutMs: number): Promise<WorkerResult> {
-    // Start processing immediately if under concurrency limit
     if (this.#pending < REDOS_MAX_CONCURRENT) {
       return this.#run(pattern, text, timeoutMs);
     }
-
-    // Enqueue — but cap the queue
     if (this.#queue.length >= REDOS_MAX_QUEUED_PER_MONITOR) {
       throw new RedosTimeoutError('ReDoS queue full');
     }
-
     return new Promise<WorkerResult>((resolve, reject) => {
-      this.#queue.push({ resolve, reject, pattern, text, timer: setTimeout(() => { reject(new RedosTimeoutError()); }, REDOS_TIMEOUT_MS) });
+      this.#queue.push({
+        resolve,
+        reject,
+        pattern,
+        text,
+        timer: setTimeout(() => reject(new RedosTimeoutError()), REDOS_TIMEOUT_MS_INLINE),
+      });
     });
   }
 
@@ -79,7 +122,7 @@ class WorkerPool {
     this.#pending += 1;
 
     const worker = new Worker(
-      new URL('redos-worker.ts', import.meta.url).href,
+      new URL('redos-worker.ts', import.meta.url),
       { workerData: { pattern, text } },
     );
     this.#pool.add(worker);
@@ -113,12 +156,10 @@ class WorkerPool {
   #freeSlot(worker: Worker): void {
     this.#pool.delete(worker);
     this.#pending -= 1;
-
-    // Try to drain the queue
     if (this.#queue.length > 0 && this.#pending < REDOS_MAX_CONCURRENT) {
       const entry = this.#queue.shift()!;
       clearTimeout(entry.timer);
-      void this.#run(entry.pattern, entry.text, REDOS_TIMEOUT_MS).then(entry.resolve, entry.reject);
+      this.#run(entry.pattern, entry.text, REDOS_TIMEOUT_MS_INLINE).then(entry.resolve, entry.reject);
     }
   }
 
@@ -131,8 +172,7 @@ class WorkerPool {
     }
     this.#pool.clear();
     return Promise.all(promises).then(() => {});
-  }
-}
+  }}
 
 // ----------------------------------------------------------------
 // ReDoSWorker — user-facing API
@@ -146,13 +186,8 @@ export class ReDoSWorker {
   #pool = new WorkerPool();
   #closed = false;
 
-  /**
-   * Safely test a regex pattern against text.
-   *
-   * @throws `RedosTimeoutError` if the check exceeds `timeoutMs` (default: `REDOS_TIMEOUT_MS`).
-   * @throws `RedosTimeoutError` if the concurrency/queue limit is reached.
-   */
-  check(pattern: string, text: string, timeoutMs = REDOS_TIMEOUT_MS): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  check(pattern: string, text: string, timeoutMs: number = 100): Promise<boolean> {
     if (this.#closed) throw new RedosTimeoutError('worker closed');
     return this.#pool.post(pattern, text, timeoutMs).then((r) => r.matched);
   }

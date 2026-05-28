@@ -75,8 +75,11 @@ describe('ProcessRunner', () => {
   // -- Output events -------------------------------------------
 
   it('emits OutputEvent with correct shape', async () => {
+    const { exitPromise } = runner.run('out_1', 'echo hello');
     const lines = await waitForOutput(runner, 'out_1', 1);
-    expect(lines).toContain('hello world');
+    expect(lines).toContain('hello');
+    await exitPromise;
+    runner.dispose('out_1');
   });
 
   function runEcho(runner: ProcessRunner, id: string, text: string) {
@@ -172,6 +175,6 @@ describe('ProcessRunner', () => {
     const id = 'ds_1';
     runner.run(id, 'sleep 60');
     runner.dispose(id);
-    expect(() => runner.tail(id, 'stdout')).toEqual([]);
+    expect(runner.tail(id, 'stdout')).toEqual([]);
   });
 });

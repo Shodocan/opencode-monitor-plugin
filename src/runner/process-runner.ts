@@ -179,8 +179,10 @@ export class ProcessRunner extends EventEmitter {
     void this.#drainStream(jobID, child.stderr!, 'stderr', tails);
 
     child.on('exit', () => {
-      this.#handles.get(jobID)?.cancelPending &&
-        Object.assign(this.#handles.get(jobID)!, { cancelPending: false });
+      const h = this.#handles.get(jobID);
+      if (h?.cancelPending) {
+        h.cancelPending = false;
+      }
     });
   }
 
@@ -200,18 +202,14 @@ export class ProcessRunner extends EventEmitter {
       while ((idx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
-
-        // Trailing empty-line suppression: if the line is empty and nothing
-        // follows (buffer drained, no more pending data), drop it.
+        // Trailing-empty suppression: if the line is empty and nothing
+        // follows (no more data pending, buffer is empty), drop it.
         if (line.length === 0) {
-          const pending = stream.read();
-          if (pending !== null) {
+          const more = stream.read();
+          if (more !== null) {
             this.#emit(jobID, type, ++seq, line);
             tails.get(type)!.add(line);
-          }
-          // If no more data pending AND buffer is also empty, skip.
-          // If buffer still has content, emit the empty line.
-          else if (buffer.length > 0) {
+          } else if (buffer.length > 0) {
             this.#emit(jobID, type, ++seq, line);
             tails.get(type)!.add(line);
           }
