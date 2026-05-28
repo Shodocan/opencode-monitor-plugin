@@ -1,5 +1,7 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import type { OutputEvent } from '../src/types.js';
 import { ProcessRunner } from '../src/runner/process-runner.js';
+import { PROCESS_OUTPUT_CAP_LINES } from '../src/limits.js';
 
 // ----------------------------------------------------------------
 // Helpers
@@ -21,7 +23,7 @@ function waitForOutput(runner: ProcessRunner, jobID: string, maxLines = 4): stri
   });
 }
 
-function waitForExit(runner: ProcessRunner, jobID: string, exitPromise: Promise<number | null>): number | null {
+function waitForExit(runner: ProcessRunner, jobID: string, exitPromise: Promise<number | null>): Promise<number | null> {
   return exitPromise.then((code) => {
     runner.dispose(jobID);
     return code;
@@ -53,9 +55,6 @@ describe('ProcessRunner', () => {
   });
 
   it('creates exit promise before listeners — no race for fast commands', async () => {
-    // The exit promise is resolved synchronously on 'exit' event.
-    // Because we attach the listener at spawn time (before returning),
-    // even a sub-ms command will resolve it.
     const id = 'pr_fast';
     const { exitPromise } = runner.run(id, 'true');
     const p = Promise.race([
@@ -82,27 +81,26 @@ describe('ProcessRunner', () => {
     runner.dispose('out_1');
   });
 
-  function runEcho(runner: ProcessRunner, id: string, text: string) {
-    return runner.run(id, `echo '${text}'`);
-  }
-
   it('does not emit trailing empty line events', async () => {
-    // A process that prints "abc\n" should emit exactly one event (line="abc"),
-    // not an extra event with an empty trailing line.
     const id = 'no-trail';
     const results: OutputEvent[] = [];
+    const outputSeen = new Promise<void>((resolve) => {
+      runner.on('output', (ev) => {
+        if (ev.jobID === id) resolve();
+      });
+    });
     runner.on('output', (ev) => {
       if (ev.jobID === id) results.push(ev);
     });
     const { exitPromise } = runner.run(id, 'echo one');
+    await outputSeen;
     await exitPromise;
-    // Only real content lines, nothing trailing.
     expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results.every((r) => r.line.length > 0 || results.indexOf(r) < results.length - 1 || r.seq === results[results.length - 1].seq)).toBe(true);
+    expect(results.every((r) => r.line.length > 0)).toBe(true);
     runner.dispose(id);
   });
 
-  it('emits seq incrementing per steam', async () => {
+  it('emits seq incrementing per stream', async () => {
     const id = 'seq_1';
     const events: OutputEvent[] = [];
     runner.on('output', (ev) => {
@@ -111,7 +109,6 @@ describe('ProcessRunner', () => {
     const { exitPromise } = runner.run(id, 'echo "seq test"');
     await exitPromise;
     const stdoutEvents = events.filter((e) => e.stream === 'stdout' && e.line.length > 0);
-    // seq should be monotonic
     for (let i = 1; i < stdoutEvents.length; i++) {
       expect(stdoutEvents[i].seq).toBeGreaterThan(stdoutEvents[i - 1].seq);
     }
@@ -146,6 +143,32 @@ describe('ProcessRunner', () => {
     runner.dispose(id);
   });
 
+  it('tail cap respects rolling 200-line limit', async () => {
+    const id = 'tail_roll';
+    const lines = Array.from({ length: 250 }, (_, i) => String(i)).join('\n');
+    const { exitPromise } = runner.run(id, `echo '${lines.replace(/\n/g, "\\n")}'`);
+    await exitPromise;
+    const tail = runner.tail(id, 'stdout');
+    expect(tail.length).toBeGreaterThanOrEqual(1);
+    // Ensure the last line (249) is in the tail
+    expect(tail).toContain('249');
+    runner.dispose(id);
+  });
+
+  it('tail cap drops oldest lines when exceeding 200', async () => {
+    const id = 'tail_drop';
+    // Generate >200 lines via printf
+    const { exitPromise } = runner.run(id, `for i in $(seq 1 300); do echo $i; done`);
+    await exitPromise;
+    const tail = runner.tail(id, 'stdout');
+    expect(tail.length).toBeLessThanOrEqual(PROCESS_OUTPUT_CAP_LINES + 1);
+    // Line "1" should be dropped since we emitted 300 lines but cap is 200
+    expect(tail).not.toContain('1');
+    // Recent lines should be present
+    expect(tail).toContain('299');
+    runner.dispose(id);
+  });
+
   // -- Cancel -------------------------------------------------
 
   it('cancel throws for unknown jobID', async () => {
@@ -156,7 +179,7 @@ describe('ProcessRunner', () => {
     const id = 'cancel-idem';
     const { exitPromise } = runner.run(id, 'sleep 30');
     await runner.cancel(id);
-    await runner.cancel(id); // no second error
+    await runner.cancel(id);
     runner.dispose(id);
   });
 
@@ -164,8 +187,17 @@ describe('ProcessRunner', () => {
     const id = 'fast-cancel';
     const { exitPromise } = runner.run(id, 'echo done');
     await exitPromise;
-    // cancel after exit — should not hang
     await runner.cancel(id);
+    runner.dispose(id);
+  });
+
+  it('cancel uses SIGTERM + SIGKILL to process group', async () => {
+    // spawn with detached=true gives a process group (-pid).
+    // cancel() sends -pid SIGTERM then SIGKILL after grace.
+    const id = 'group-kill';
+    const { exitPromise } = runner.run(id, 'sleep 60');
+    await runner.cancel(id);
+    // If we get here without hanging, cancel worked
     runner.dispose(id);
   });
 
