@@ -27,3 +27,14 @@ export interface JobStatus {
   deliveryStatus?: DeliveryStatus;
   queueDroppedCount?: number;
 }
+
+export interface FormatterOptions {
+  nonce?: string;
+  maxPreviewLen?: number;
+}
+
+export interface FormattedDelivery {
+  text: string;
+  commandPreview?: string;
+  promptPreview?: string;
+}
