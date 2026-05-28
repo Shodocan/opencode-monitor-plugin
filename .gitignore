@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 
 # Build output
 dist/
@@ -19,5 +18,5 @@ tsconfig.tsbuildinfo
 .DS_Store
 Thumbs.db
 
-# Serana state
+# Serena state
 .serena/
