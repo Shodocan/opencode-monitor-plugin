@@ -87,6 +87,42 @@ describe('IdleQueue status', () => {
 });
 
 // ----------------------------------------------------------------
+// Per-session status isolation
+// ----------------------------------------------------------------
+
+describe('IdleQueue per-session status cache', () => {
+  it('isolates status per session', () => {
+    const q = new IdleQueue(undefined, deliveryStub);
+    q.setSessionStatus('idle', 's1');
+    q.setSessionStatus('busy', 's2');
+
+    // s1 is idle → getSessionStatus reflects per-session cache
+    expect(q.getSessionStatus('s1')).toBe('idle');
+    expect(q.getSessionStatus('s2')).toBe('busy');
+  });
+
+  it('flush(sessionID) only flushes relevant session entries', () => {
+    const q = new IdleQueue(undefined, deliveryStub);
+    q.setSessionStatus('idle', 's1');
+    q.setSessionStatus('busy', 's2');
+
+    // Enqueue entries for both sessions (busy so no auto-flush for s2)
+    q.enqueue(req('s1', 'bg_a', 'bg', 'from-s1'));
+    q.enqueue(req('s1', 'bg_b', 'bg', 'from-s1-2'));
+    q.enqueue(req('s2', 'bg_c', 'bg', 'from-s2'));
+
+    q.flush('s1');
+    expect(delivered.map((d) => d.text)).toEqual(['from-s1', 'from-s1-2']);
+    expect(q.pendingCount).toBe(1);
+  });
+
+  it('getSessionStatus returns undefined for unknown session', () => {
+    const q = new IdleQueue(undefined, deliveryStub);
+    expect(q.getSessionStatus('unknown')).toBe(undefined);
+  });
+});
+
+// ----------------------------------------------------------------
 // IdleQueue — deliver / flush
 // ----------------------------------------------------------------
 
@@ -133,6 +169,26 @@ describe('IdleQueue deliver', () => {
     expect(deliveredCount).toBe(1);
     expect(q.pendingCount).toBe(1);
   });
+
+  it('delivery handler exception does not leave flushing stuck', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'bg_throw', 'bg', 'will-throw'));
+    q.enqueue(req('s1', 'bg_ok', 'bg', 'pass'));
+
+    let callCount = 0;
+    q.onDelivery = () => {
+      callCount += 1;
+      if (callCount === 1) throw new Error('bridge error');
+      return true;
+    };
+
+    // Flush with try/finally must not leave #flushing = true forever
+    q.setSessionStatus('idle');
+
+    // After flush, calling flush again should not be blocked
+    q.flush();
+    expect(q.pendingCount).toBe(0);
+  });
 });
 
 // ----------------------------------------------------------------
@@ -175,17 +231,35 @@ describe('IdleQueue /loop coalescing', () => {
     expect(q.pendingCount).toBe(3);
   });
 
-  it('coalesced entry is not evicted by FIFO eviction', () => {
+  it('coalesced entry survives FIFO eviction during coalesced loop', () => {
     const q = new IdleQueue('busy', deliveryStub);
+    // Enqueue a coalesced loop entry first
     q.enqueue(req('s1', 'loop_1', 'loop', 'first'));
-    // Fill up to global cap; loop entry should stay because it's coalesced
+    // Fill up to global cap with standard entries
     for (let i = 0; i < MAX_PENDING_GLOBAL; i++) {
-      q.enqueue(req('s1', `bg_${i}`, 'bg', `x`));
+      q.enqueue(req('s1', `bg_${i}`, 'bg', 'x'));
     }
     const entries = q.peek();
     const loopEntry = entries.find((e) => e.req.kind === 'loop');
     expect(loopEntry).toBeDefined();
-    // loop entry is retained even though cap was hit
+    // Also verify tickCount was incremented
+    expect(loopEntry!.coalescedTickCount).toBe(1);
+  });
+
+  it('coalesced loop survives eviction even when at capacity', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'loop_1', 'loop', 'tick-1'));
+    q.enqueue(req('s1', 'loop_1', 'loop', 'tick-2'));
+    // Fill to cap
+    for (let i = 0; i < MAX_PENDING_GLOBAL + 2; i++) {
+      q.enqueue(req('s1', `bg_${i}`, 'bg', 'x'));
+    }
+    // Coalesced loop must still be in queue
+    const hasLoop = q.peek().some((e) => e.req.jobID === 'loop_1');
+    expect(hasLoop).toBe(true);
+    // And it should have been coalesced
+    const loopEntry = q.peek().find((e) => e.req.jobID === 'loop_1');
+    expect(loopEntry?.coalesced).toBe(true);
   });
 });
 
@@ -227,6 +301,24 @@ describe('IdleQueue caps', () => {
     q.enqueue(req('s1', 'bg_1', 'bg', 'will-stay'));
     expect(q.pendingCount).toBe(1);
   });
+
+  it('evictFifo uses index-based splice (no mutation-while-iterating)', () => {
+    // Verify that after eviction, the queue is consistent — the evicted
+    // entry was removed from both #globalOrder and #pending.
+    const q = new IdleQueue('busy', deliveryStub);
+    const entries: AutoSubmitRequest[] = [];
+    for (let i = 0; i < 5; i++) {
+      entries.push(req('s1', `bg_${i}`, 'bg', `payload-${i}`));
+      q.enqueue(entries[i]);
+    }
+    // Now force eviction by adding enough to exceed global cap
+    for (let i = 5; i < MAX_PENDING_GLOBAL + 2; i++) {
+      q.enqueue(req('s1', `bg_${i}`, 'bg', `x-${i}`));
+    }
+    // Oldest bg_0 should have been evicted
+    const hasBg0 = q.peek().some((e) => e.req.jobID === 'bg_0');
+    expect(hasBg0).toBe(false);
+  });
 });
 
 // ----------------------------------------------------------------
@@ -241,5 +333,33 @@ describe('IdleQueue dropped count', () => {
       q.enqueue(req('s1', `bg_${i}`, 'bg', 'x'));
     }
     expect(q.dropped).toBe(10);
+  });
+});
+
+// ----------------------------------------------------------------
+// IdleQueue — no direct mutation of implementation details
+// ----------------------------------------------------------------
+
+describe('IdleQueue no direct mutation leak', () => {
+  it('peek returns a new array each call (no direct mutation)', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'bg_1', 'bg', 'a'));
+    q.enqueue(req('s1', 'bg_2', 'bg', 'b'));
+
+    const a = q.peek();
+    const b = q.peek();
+    expect(a).not.toBe(b);
+    // Mutating the returned array does not affect internal state
+    a.length = 0;
+    expect(q.pendingCount).toBe(2);
+  });
+
+  it('pendingCount is consistent after eviction', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    for (let i = 0; i < MAX_PENDING_GLOBAL + 2; i++) {
+      q.enqueue(req('s1', `bg_${i}`, 'bg', 'x'));
+    }
+    // After eviction, pendingCount reflects actual entries
+    expect(q.pendingCount).toBeLessThanOrEqual(MAX_PENDING_GLOBAL);
   });
 });

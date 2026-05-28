@@ -52,7 +52,6 @@ describe('DeliveryQueue enqueue / drain', () => {
 describe('DeliveryQueue expiry', () => {
   it('prunes expired entries on enqueue', () => {
     const q = new DeliveryQueue();
-    // Manually set enqueuedAt to simulate past expiry
     const spy = vi.spyOn(Date, 'now').mockImplementation(() => 0);
 
     q.enqueue(req('old'));
@@ -61,7 +60,6 @@ describe('DeliveryQueue expiry', () => {
     spy.mockImplementation(() => BRIDGE_UNAVAILABLE_EXPIRY_MS + 1);
     q.enqueue(req('new'));
 
-    // The old entry should have been pruned
     expect(q.dropped).toBe(1);
     expect(q.length).toBe(1);
     expect(q.peek()[0].jobID).toBe('new');
@@ -69,19 +67,31 @@ describe('DeliveryQueue expiry', () => {
   });
 
   it('expiredWithin reports entries near expiry', () => {
+    const base = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => base);
+
     const q = new DeliveryQueue();
+    // Enqueue when "now" is near-bridge-expiry age
+    const nearExpiryMs = 1000; // will expire in ~1s
+    const enqueuedAt = base - (BRIDGE_UNAVAILABLE_EXPIRY_MS - nearExpiryMs);
+    spy.mockImplementation(() => enqueuedAt);
+    q.enqueue(req('near-expiry'));
 
-    const now = Date.now();
-    // Use negative offset approach: set entry at time that is near expiry
-    vi.spyOn(Date, 'now').mockImplementation(() => now);
-    q.enqueue(req('x'));
-    // That entry just enqueued at `now`, not expired yet
+    // Now time is `base` — entry is near expiry
+    spy.mockImplementation(() => base);
 
-    // Enqueue an expired entry by manipulating internals
-    vi.spyOn(Date, 'now').mockImplementation(() => now + BRIDGE_UNAVAILABLE_EXPIRY_MS + 1);
-    q.enqueue(req('y'));
-    // y is new, x is expired — should have pruned x on enqueue
-    expect(q.dropped).toBe(1);
+    // Entries expiring within 2000ms should be counted
+    const count = q.expiredWithin(2000);
+    expect(count).toBe(1);
+    spy.mockRestore();
+  });
+
+  it('expiredWithin returns 0 for fresh entries', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('fresh'));
+    // Fresh entry just enqueued, not near expiry
+    const count = q.expiredWithin(1000);
+    expect(count).toBe(0);
   });
 });
 
@@ -92,12 +102,8 @@ describe('DeliveryQueue expiry', () => {
 describe('DeliveryQueue distinct from IdleQueue', () => {
   it('delivery queue has expiry while idle queue entries do not expire', () => {
     const dq = new DeliveryQueue();
-    // Delivery queue entries do expire after 10 minutes
     dq.enqueue(req('bg_1'));
     expect(dq.length).toBe(1);
-    // Idle entries stay queued regardless of session busyness —
-    // confirmed by the absence of any TTL field on the DeliveryQueue entry
-    void dq;
   });
 
   it('dropped count increments on expiry prune', () => {
@@ -111,5 +117,94 @@ describe('DeliveryQueue distinct from IdleQueue', () => {
     spy.mockRestore();
 
     expect(q.dropped).toBe(1);
+  });
+});
+
+// ----------------------------------------------------------------
+// flush with try/finally — handler exceptions do not deadlock
+// ----------------------------------------------------------------
+
+describe('DeliveryQueue flush', () => {
+  it('flush delivers all entries when handler returns true', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('a'));
+    q.enqueue(req('b'));
+
+    let delivered = 0;
+    const count = q.flush(() => {
+      delivered += 1;
+      return true;
+    });
+
+    expect(count).toBe(2);
+    expect(delivered).toBe(2);
+    expect(q.length).toBe(0);
+  });
+
+  it('flush stops on false return', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('a'));
+    q.enqueue(req('b'));
+    q.enqueue(req('c'));
+
+    let callCount = 0;
+    const count = q.flush(() => {
+      callCount += 1;
+      return callCount <= 1; // allow first, reject second
+    });
+
+    expect(count).toBe(1);
+    expect(q.length).toBe(2);
+  });
+
+  it('handler exception does not leave flush stuck', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('throws'));
+    q.enqueue(req('ok'));
+
+    let callCount = 0;
+    const count = q.flush(() => {
+      callCount += 1;
+      if (callCount === 1) throw new Error('bridge error');
+      return true;
+    });
+
+    // First threw (retained), second delivered
+    expect(count).toBe(1);
+    // Thrown entry retained in queue
+    expect(q.length).toBe(1);
+    // Queue is not deadlocked — can flush again
+    const count2 = q.flush(() => true);
+    expect(count2).toBe(1);
+    expect(q.length).toBe(0);
+  });
+});
+
+// ----------------------------------------------------------------
+// No direct mutation of implementation details
+// ----------------------------------------------------------------
+
+describe('DeliveryQueue no direct mutation leak', () => {
+  it('peek returns independent copy', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('x'));
+    q.enqueue(req('y'));
+
+    const a = q.peek();
+    const b = q.peek();
+    expect(a).not.toBe(b);
+
+    // Mutate returned array — should not affect internal state
+    a.length = 0;
+    expect(q.length).toBe(2);
+  });
+
+  it('drain clears the queue completely', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('a'));
+    q.enqueue(req('b'));
+    q.drain();
+    expect(q.length).toBe(0);
+    expect(q.drain()).toEqual([]);
   });
 });

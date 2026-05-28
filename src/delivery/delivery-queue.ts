@@ -98,6 +98,36 @@ export class DeliveryQueue {
     }
     return count;
   }
+
+  /**
+   * Flush (deliver) all pending entries through the synchronous handler.
+   * Returns count of successfully delivered requests.
+   * Exceptions from `onDelivery` are caught and do not leave the queue stuck.
+   */
+  flush(
+    onDelivery: (req: AutoSubmitRequest) => void | boolean,
+  ): number {
+    let delivered = 0;
+    const remaining: DeliveryPendingEntry[] = [];
+
+    for (const entry of this.#pending) {
+      try {
+        const ok = onDelivery(entry.req);
+        if (ok !== false) {
+          delivered += 1;
+        } else {
+          remaining.push(entry);
+        }
+      } catch {
+        // Handler threw — continue delivering remaining entries
+        // so a single exception does not deadlock the queue.
+        remaining.push(entry);
+      }
+    }
+
+    this.#pending = remaining;
+    return delivered;
+  }
 }
 
 export default DeliveryQueue;

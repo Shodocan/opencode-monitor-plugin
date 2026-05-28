@@ -24,6 +24,24 @@ export function isIdle(status: SessionStatus | undefined): boolean {
   return status === 'idle';
 }
 
+/**
+ * Check whether any session in the map is idle (used for legacy
+ * constructors that pass a single status value).
+ */
+export function isAnyIdle(
+  map: Map<string, SessionStatus>,
+  sessionID?: string,
+): boolean {
+  if (sessionID !== undefined) {
+    const status = map.get(sessionID);
+    return isIdle(status);
+  }
+  for (const status of map.values()) {
+    if (isIdle(status)) return true;
+  }
+  return false;
+}
+
 // ----------------------------------------------------------------
 // Pending entry held in the idle queue
 // ----------------------------------------------------------------
@@ -42,7 +60,8 @@ export interface IdlePendingEntry {
 // ----------------------------------------------------------------
 
 export class IdleQueue {
-  #sessionStatus: SessionStatus | undefined;
+  /** Per-session status cache — spec requires per-session cache. */
+  #sessionStatuses: Map<string, SessionStatus>;
   #pending: Map<string, IdlePendingEntry>;
   #globalOrder: string[];
 
@@ -59,7 +78,13 @@ export class IdleQueue {
     sessionStatus: SessionStatus | undefined,
     onDelivery: (req: AutoSubmitRequest) => boolean,
   ) {
-    this.#sessionStatus = sessionStatus;
+    this.#sessionStatuses = new Map();
+    if (sessionStatus !== undefined) {
+      // Legacy: single status with no sessionID is stored under a default key
+      // but callers are expected to set session statuses via setSessionStatus.
+      // For backwards compatibility, accept a dummy entry.
+      this.#sessionStatuses.set('__default__', sessionStatus);
+    }
     this.onDelivery = onDelivery;
     this.#pending = new Map();
     this.#globalOrder = [];
@@ -72,9 +97,24 @@ export class IdleQueue {
     return this.#pending.size;
   }
 
-  /** Session status as cached by this instance. */
+  /**
+   * Session status for a specific session, or the first cached
+   * status when no sessionID is supplied (legacy getter).
+   */
   get status(): SessionStatus | undefined {
-    return this.#sessionStatus;
+    if (this.#sessionStatuses.has('__default__')) {
+      return this.#sessionStatuses.get('__default__');
+    }
+    const first = this.#sessionStatuses.keys().next().value;
+    if (first !== undefined) {
+      return this.#sessionStatuses.get(first);
+    }
+    return undefined;
+  }
+
+  /** Status for a specific session (per-session cache). */
+  getSessionStatus(sessionID: string): SessionStatus | undefined {
+    return this.#sessionStatuses.get(sessionID);
   }
 
   /** Inspect pending entries (read-only). */
@@ -85,12 +125,18 @@ export class IdleQueue {
   // -- Status ---------------------------------------------------
 
   /**
-   * Update session status and flush when the session becomes idle.
+   * Update status for a session and flush entries for that session
+   * when it becomes idle.
    */
-  setSessionStatus(status: SessionStatus | undefined): void {
-    this.#sessionStatus = status;
+  setSessionStatus(
+    status: SessionStatus | undefined,
+    sessionID?: string,
+  ): void {
+    const sid = sessionID ?? '__default__';
+    if (status === undefined) this.#sessionStatuses.delete(sid);
+    else this.#sessionStatuses.set(sid, status);
     if (isIdle(status) && this.#pending.size > 0) {
-      this.flush();
+      this.flush(sessionID);
     }
   }
 
@@ -105,7 +151,8 @@ export class IdleQueue {
    */
   deliver(req: AutoSubmitRequest): void {
     this.enqueue(req);
-    if (isIdle(this.#sessionStatus)) {
+    const status = this.#sessionStatuses.get(req.sessionID);
+    if (isIdle(status ?? this.status)) {
       this.flush();
     }
   }
@@ -114,24 +161,67 @@ export class IdleQueue {
 
   #flushing = false;
 
-  flush(): void {
+  flush(sessionID?: string): void {
     if (this.#flushing) return;
     this.#flushing = true;
 
-    while (this.#globalOrder.length > 0) {
-      if (!isIdle(this.#sessionStatus)) break;
+    try {
+      if (sessionID === undefined) {
+        // Standard FIFO flush: process from head of queue.
+        while (this.#globalOrder.length > 0) {
+          if (!isIdle(this.status)) break;
+          if (!this.#shiftAndDeliver()) break;
+        }
+      } else {
+        // Targeted flush: deliver entries for this session only.
+        while (this.#globalOrder.length > 0) {
+          if (!isIdle(this.#sessionStatuses.get(sessionID))) break;
 
-      const key = this.#globalOrder.shift()!;
-      const entry = this.#pending.get(key);
-      if (!entry) continue;
+          const idx = this.#globalOrder.findIndex(
+            (k) => this.#pending.get(k)?.req.sessionID === sessionID,
+          );
+          if (idx === -1) break;
 
-      const ok = this.onDelivery(entry.req);
-      this.#pending.delete(key);
-      this.byteSize -= entry.byteSize;
-      if (!ok) break;
+          const key = this.#globalOrder[idx]!;
+          const entry = this.#pending.get(key);
+          if (!entry) {
+            this.#globalOrder.splice(idx, 1);
+            continue;
+          }
+
+          let ok: boolean;
+          try {
+            ok = this.onDelivery(entry.req);
+          } catch {
+            ok = false;
+          }
+          this.#pending.delete(key);
+          this.#globalOrder.splice(idx, 1);
+          this.byteSize -= entry.byteSize;
+          if (!ok) break;
+        }
+      }
+    } finally {
+      this.#flushing = false;
     }
+  }
 
-    this.#flushing = false;
+  /** Shift one entry from the head of the global order, deliver it, and
+   * remove it from the pending map. Returns true if the delivery succeeded. */
+  #shiftAndDeliver(): boolean {
+    const key = this.#globalOrder.shift()!;
+    const entry = this.#pending.get(key);
+    if (!entry) return true;
+
+    let ok: boolean;
+    try {
+      ok = this.onDelivery(entry.req);
+    } catch {
+      ok = false;
+    }
+    this.#pending.delete(key);
+    this.byteSize -= entry.byteSize;
+    return ok;
   }
 
   // -- Enqueue with caps ----------------------------------------
@@ -210,28 +300,45 @@ export class IdleQueue {
     return count;
   }
 
+  /**
+   * Evict the oldest non-coalesced entry using index-based splice
+   * to avoid mutation-while-iterating bugs.
+   */
   #evictFifo(): void {
-    for (const key of this.#globalOrder) {
+    const idx = this.#globalOrder.findIndex((key) => {
       const entry = this.#pending.get(key);
-      if (!entry || entry.coalesced) continue;
-      this.#pending.delete(key);
-      this.#globalOrder.shift();
-      this.byteSize -= entry.byteSize;
-      this.dropped += 1;
-      return;
-    }
+      return entry !== undefined && !entry.coalesced;
+    });
+    if (idx === -1) return;
+
+    const key = this.#globalOrder[idx];
+    const entry = this.#pending.get(key);
+    if (!entry) return;
+
+    this.#pending.delete(key);
+    this.#globalOrder.splice(idx, 1);
+    this.byteSize -= entry.byteSize;
+    this.dropped += 1;
   }
 
+  /**
+   * Evict the oldest entry for a specific job using findIndex + splice.
+   */
   #evictOldestForJob(jobID: string): void {
-    for (const key of this.#globalOrder) {
+    const idx = this.#globalOrder.findIndex((key) => {
       const entry = this.#pending.get(key);
-      if (!entry || entry.req.jobID !== jobID) continue;
-      this.#pending.delete(key);
-      this.#globalOrder.splice(this.#globalOrder.indexOf(key), 1);
-      this.byteSize -= entry.byteSize;
-      this.dropped += 1;
-      return;
-    }
+      return entry !== undefined && entry.req.jobID === jobID;
+    });
+    if (idx === -1) return;
+
+    const key = this.#globalOrder[idx];
+    const entry = this.#pending.get(key);
+    if (!entry) return;
+
+    this.#pending.delete(key);
+    this.#globalOrder.splice(idx, 1);
+    this.byteSize -= entry.byteSize;
+    this.dropped += 1;
   }
 
   #measureBytes(req: AutoSubmitRequest): number {
