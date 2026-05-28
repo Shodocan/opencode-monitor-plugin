@@ -34,6 +34,14 @@ interface ReadyWindow {
   truncated: boolean;
 }
 
+/**
+ * Builds monitor delivery windows from ProcessRunner output.
+ *
+ * Assumes ProcessRunner's documented seq contract: events for this engine arrive
+ * in monotonically increasing seq order. Older/equal seqs are treated as
+ * duplicate stale input and ignored. Delivery dedupe state is pruned to the
+ * bounded ring/pending/ready window horizon after every emit.
+ */
 export class MonitorEngine {
   #ring: OutputEvent[] = [];
   #droppedFromRing = 0;

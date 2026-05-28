@@ -172,6 +172,19 @@ describe('MonitorEngine', () => {
     expect(onWindow).toHaveBeenCalledTimes(1); // no extra call for seq 2 (non-match)
   });
 
+  it('should ignore lower out-of-order seqs after a higher seq is seen', () => {
+    const onWindow = vi.fn();
+    const engine = new MonitorEngine({
+      jobID: 'job-a', regex: /ERR/, before: 0, after: 0, debounceMs: 0, ringSize: 50, onWindow,
+    });
+
+    engine.ingest(makeEvent(3, 'ERR-new'));
+    engine.ingest(makeEvent(2, 'ERR-old'));
+
+    expect(onWindow).toHaveBeenCalledTimes(1);
+    expect(onWindow.mock.calls[0][0].events.map((event: OutputEvent) => event.seq)).toEqual([3]);
+  });
+
   it('should not deliver a line seq that was already delivered', () => {
     const onWindow = vi.fn();
     const engine = new MonitorEngine({
@@ -300,6 +313,21 @@ describe('MonitorEngine', () => {
     vi.useRealTimers();
   });
 
+  it('destroy() should cancel an armed debounce timer', () => {
+    vi.useFakeTimers();
+    const onWindow = vi.fn();
+    const engine = new MonitorEngine({
+      jobID: 'job-a', regex: /ERR/, before: 0, after: 0, debounceMs: 100, onWindow,
+    });
+
+    engine.ingest(makeEvent(1, 'ERR'));
+    engine.destroy();
+    vi.advanceTimersByTime(100);
+
+    expect(onWindow).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   // -- stateful regex (lastIndex reset) --
 
   it('should reset lastIndex before each regex test', () => {
@@ -353,10 +381,12 @@ describe('MonitorEngine', () => {
     engine.ingest(makeEvent(4, 'after'));
 
     expect(onWindow).toHaveBeenCalledTimes(2);
-    const deliveredSeqs = onWindow.mock.calls.flatMap(([window]: [MonitorWindow]) =>
-      window.events.map((event) => event.seq),
-    );
-    expect(deliveredSeqs).toEqual([1, 2, 3, 4]);
+    const first = onWindow.mock.calls[0][0] as MonitorWindow;
+    const second = onWindow.mock.calls[1][0] as MonitorWindow;
+    expect(first.events.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(first.matchSeqs).toEqual([2]);
+    expect(second.events.map((event) => event.seq)).toEqual([4]);
+    expect(second.matchSeqs).toEqual([]);
   });
 
   // -- stdout+stderr ring merge --
