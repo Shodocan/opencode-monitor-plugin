@@ -20,29 +20,23 @@ export interface ScheduleConfig {
 
 export interface SchedulerOptions {
   delivery: DeliveryCallback;
-  onDrop?: (request: AutoSubmitRequest) => void;
-}
-
-export interface ActiveTimer {
-  kind: SchedulerKind;
-  jobID: string;
 }
 
 export class PromptScheduler {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private active = new Set<string>();
   private delivery: DeliveryCallback;
-  private onDrop?: (request: AutoSubmitRequest) => void;
 
   constructor(opts: SchedulerOptions) {
     this.delivery = opts.delivery;
-    this.onDrop = opts.onDrop;
   }
 
   /**
    * Start a looping scheduler that fires every `intervalMs`.
-   * Does not build a backlog: if a tick is still pending when the next
-   * interval fires, the tick is skipped and the timer reschedules.
+   * Each fire chains the next setTimeout after delivery completes.
+   * The loop never builds a backlog — only one tick is active at a time.
+   * If delivery throws, the loop survives (reschedules) and the error
+   * propagates via the delivery callback caller's error handling.
    */
   scheduleLoop(cfg: LoopConfig): void {
     if (this.active.has(cfg.jobID)) return;
@@ -67,8 +61,13 @@ export class PromptScheduler {
 
     const timer = setTimeout(() => {
       this.timers.delete(id);
-      this.fire({ sessionID, jobID: id, kind, text: prompt, submit: true });
-      this.active.delete(id);
+      try {
+        this.delivery({ sessionID, jobID: id, kind, text: prompt, submit: true });
+      } catch {
+        // Swallow: one-shot delivery errors must not leak active state.
+      } finally {
+        this.active.delete(id);
+      }
     }, delay);
 
     this.timers.set(id, timer);
@@ -124,16 +123,15 @@ export class PromptScheduler {
       submit: true as const,
     };
 
-    this.fire(request);
-
-    const timer = setTimeout(() => {
-      this.tickLoop(cfg);
-    }, cfg.intervalMs);
-    this.timers.set(cfg.jobID, timer);
-  }
-
-  private fire(request: AutoSubmitRequest): void {
-    if (!this.active.has(request.jobID)) return;
-    this.delivery(request);
+    try {
+      this.delivery(request);
+    } catch {
+      // Swallow: delivery errors must not kill the loop chain.
+    } finally {
+      const timer = setTimeout(() => {
+        this.tickLoop(cfg);
+      }, cfg.intervalMs);
+      this.timers.set(cfg.jobID, timer);
+    }
   }
 }

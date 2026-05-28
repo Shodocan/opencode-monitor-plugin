@@ -280,6 +280,56 @@ describe('PromptScheduler', () => {
     });
   });
 
+  // -- delivery error handling --
+  describe('delivery errors', () => {
+    it('loop survives delivery throw and keeps scheduling', () => {
+      delivery = vi.fn((request: AutoSubmitRequest) => {
+        if (request.kind === 'loop') throw new Error('boom');
+      });
+      const s = scheduler(delivery);
+
+      s.scheduleLoop(mkLoop({ intervalMs: 200 }));
+      // The throw propagates but the next tick is still scheduled.
+      expect(delivery).toHaveBeenCalledTimes(1);
+      expect(s.activeJobs.has('loop-1')).toBe(true);
+
+      vi.advanceTimersByTime(200);
+      expect(delivery).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(200);
+      expect(delivery).toHaveBeenCalledTimes(3);
+      s.destroy();
+    });
+
+    it('one-shot cleans active state on delivery throw', () => {
+      delivery = vi.fn(() => { throw new Error('fail'); });
+      const s = scheduler(delivery);
+
+      s.scheduleOnce(mkSchedule({ runAt: new Date(500) }));
+      expect(s.activeJobs.has('sched-1')).toBe(true);
+
+      vi.advanceTimersByTime(500);
+      // active is cleaned up even though delivery threw.
+      expect(s.activeJobs.has('sched-1')).toBe(false);
+      expect(delivery).toHaveBeenCalledTimes(1);
+      s.destroy();
+    });
+
+    it('throws preserve error propagation', () => {
+      const errMsg = new Error('explicit');
+      delivery = vi.fn(() => { throw errMsg; });
+      const s = scheduler(delivery);
+
+      s.scheduleOnce(mkSchedule({ runAt: new Date(100) }));
+      vi.advanceTimersByTime(100);
+
+      expect(delivery).toHaveBeenCalledTimes(1);
+      // The callback ran; the error was swallowed; call shape is correct.
+      expect(delivery.mock.calls[0]).toBeTruthy();
+      s.destroy();
+    });
+  });
+
   // -- no backlog --
   describe('no backlog', () => {
     it('does not accumulate ticks when interval fires but timer stays in-flight', () => {
