@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AutoSubmitRequest, OutputEvent, OutputStream } from '../src/types.js';
 import type { PluginContext } from '../src/plugin-context.js';
-import { createMonitorPlugin, registerCommands } from '../src/index.js';
+import { createMonitorPlugin, server } from '../src/index.js';
 
 class FakeRunner {
   outputHandlers = new Set<(event: OutputEvent) => void>();
@@ -65,11 +65,21 @@ function userCtx(sessionID = 's1'): PluginContext {
 describe('plugin command handlers', () => {
   it('registers slash commands', () => {
     const registered = new Map<string, unknown>();
-    registerCommands({
+    createMonitorPlugin().registerCommands({
       registerSlashCommand: (name, handler) => registered.set(name, handler),
     });
 
     expect([...registered.keys()].sort()).toEqual(['background', 'cancel', 'jobs', 'loop', 'monitor', 'schedule']);
+  });
+
+  it('exports an opencode-compatible server plugin that registers command templates', async () => {
+    const hooks = await server({});
+    const config: { command?: Record<string, { template: string; description?: string }> } = {};
+
+    await hooks.config(config);
+
+    expect(Object.keys(config.command ?? {}).sort()).toEqual(['background', 'cancel', 'jobs', 'loop', 'monitor', 'schedule']);
+    expect(config.command?.background.template).toBe('$ARGUMENTS');
   });
 
   it('rejects missing session ID and non-user origins', async () => {

@@ -41,6 +41,23 @@ export interface MonitorPlugin {
   handlers: Record<string, CommandHandler>;
 }
 
+interface OpencodePluginInput {
+  directory?: string;
+}
+
+interface OpencodeConfigLike {
+  command?: Record<string, { template: string; description?: string }>;
+}
+
+const COMMAND_DESCRIPTIONS: Record<string, string> = {
+  background: 'Run a shell command in the background and report when it exits.',
+  monitor: 'Run a shell command and report matching output windows.',
+  loop: 'Repeatedly submit a prompt on an interval.',
+  schedule: 'Submit a prompt once in the future.',
+  jobs: 'List opencode-monitor jobs for this session.',
+  cancel: 'Cancel an opencode-monitor job for this session.',
+};
+
 interface JobRuntime {
   sessionID: string;
   kind: JobKind;
@@ -251,10 +268,45 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   };
 }
 
-export function registerCommands(ctx: PluginContext, deps?: MonitorPluginDependencies): MonitorPlugin {
+export function registerCommands(ctx: PluginContext | OpencodePluginInput, deps?: MonitorPluginDependencies): MonitorPlugin | Promise<unknown> {
+  if (typeof (ctx as PluginContext).registerSlashCommand !== 'function') {
+    return server(ctx as OpencodePluginInput);
+  }
   const plugin = createMonitorPlugin(deps);
-  plugin.registerCommands(ctx);
+  plugin.registerCommands(ctx as PluginContext);
   return plugin;
 }
 
-export default createMonitorPlugin;
+export const server = async (_input: OpencodePluginInput = {}) => {
+  const plugin = createMonitorPlugin();
+  return {
+    config: async (config: OpencodeConfigLike) => {
+      config.command ??= {};
+      for (const [name, description] of Object.entries(COMMAND_DESCRIPTIONS)) {
+        config.command[name] = { template: '$ARGUMENTS', description };
+      }
+    },
+    'command.execute.before': async (
+      input: { command: string; sessionID: string; arguments: string },
+      output: { parts: unknown[] },
+    ) => {
+      const handler = plugin.handlers[input.command];
+      if (!handler) return;
+      const text = await handler(input.arguments, {
+        sessionID: input.sessionID,
+        invocationOrigin: 'user',
+        registerSlashCommand: () => {},
+      });
+      output.parts = [{
+        id: `opencode-monitor-${Date.now()}`,
+        sessionID: input.sessionID,
+        messageID: '',
+        type: 'text',
+        text,
+        synthetic: true,
+      }];
+    },
+  };
+};
+
+export default server;
