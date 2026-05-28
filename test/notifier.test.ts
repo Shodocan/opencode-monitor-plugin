@@ -53,4 +53,14 @@ describe('appendSubmitToSession notifier', () => {
 
     await expect(health(configPath)).resolves.toEqual({ ok: true });
   });
+
+  it('throws when bridge rejects append-submit', async () => {
+    const configPath = await tempConfigPath();
+    const server = new BridgeServer({ configPath });
+    servers.push(server);
+    await server.start();
+
+    await expect(appendSubmitToSession({ sessionID: 'missing', jobID: 'bg_1', kind: 'bg', text: 'x', submit: true }, configPath))
+      .rejects.toThrow(/status 409/);
+  });
 });

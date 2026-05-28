@@ -71,6 +71,18 @@ describe('bridge config and bearer token handling', () => {
       .rejects.toThrow(/symlink/i);
   });
 
+  it('tears down startup state when config write fails', async () => {
+    const configPath = await tempConfigPath();
+    const targetPath = `${configPath}.target`;
+    await writeBridgeConfig(targetPath, { url: 'http://127.0.0.1:1', token: 'f'.repeat(43) });
+    await symlink(targetPath, configPath);
+    const server = new BridgeServer({ configPath });
+
+    await expect(server.start()).rejects.toThrow(/symlink/i);
+    await expect(server.start()).rejects.toThrow(/symlink/i);
+    await expect(server.stop()).resolves.toBeUndefined();
+  });
+
   it('uses XDG_RUNTIME_DIR default config path when env path is absent', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'opencode-monitor-xdg-'));
     vi.stubEnv('OPENCODE_MONITOR_BRIDGE_CONFIG', '');
