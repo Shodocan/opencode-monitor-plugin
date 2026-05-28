@@ -1,0 +1,202 @@
+## Tasks
+
+### Task 1: Project scaffolding
+
+**Files:** `package.json`, `tsconfig.json`, `src/index.ts`
+
+- [ ] **Step 1: Create `package.json`** with name, version, type module, scripts build/test/bridge, dependencies (`@modelcontextprotocol/sdk`, `zod`), devDependencies (`typescript`, `@types/bun`).
+
+```json
+{
+  "name": "@opencode-monitor/plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "build": "tsc", "test": "bun test", "bridge": "node dist/bridge/server.js" },
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.9.0", "zod": "^3.24.0" },
+  "devDependencies": { "typescript": "^5.7.0", "@types/bun": "^1.2.0" }
+}
+```
+
+- [ ] **Step 2: Create `tsconfig.json`** with ES2022 target, bundler module resolution, strict mode.
+- [ ] **Step 3: Create `src/index.ts`** - plugin entry with `initPlugin(ctx)` and `registerCommands`.
+- [ ] **Step 4: Verify** - `bun install && bun run build`. Expected: dist/ created, zero errors.
+
+---
+
+### Task 2: Type definitions and limit constants
+
+**Files:** `src/types.ts`, `src/limits.ts`
+
+- [ ] **Step 1: Define core types** - `JobKind`, `OutputEvent`, `AutoSubmitRequest`, `DeliveryPayload`.
+- [ ] **Step 2: Define limits** - MAX_ACTIVE_JOBS=20, COMPLETED_RETENTION=50, LINE_LENGTH_CAP=8 KiB, REGEX_LENGTH_CAP=512, BG_LINES_CAP=200, BG_BYTES_CAP=32 KiB, MON_DELIVERY_BYTES_CAP=16 KiB, MON_DELIVERY_EVENTS_CAP=200, MON_RING_BUFFER_SIZE=50_000, MON_AFTER_WAIT_MS=5000, REDEX_PER_LINE_TIMEOUT_MS=100, REDEX_MAX_CONCURRENT=4, MIN_LOOP_INTERVAL_MS=10_000, MAX_SCHEDULE_HORIZON_MS=30 days.
+- [ ] **Step 3: Verify** - `bun run build`. Expected: zero type errors.
+
+---
+
+### Task 3: Parsers (background, monitor, time)
+
+**Files:** `src/parse-background.ts`, `src/parse-monitor.ts`, `src/parse-time.ts`
+**Tests:** `test/parse-monitor.test.ts`, `test/parse-time.test.ts`
+
+- [ ] **Step 1: `parseBackground`** - join args, validate non-empty command.
+- [ ] **Step 2: `parseMonitor`** - regex validation (delimited `/pattern/flags` or plain), flags i/m/u accept, g/y reject, `--before` 0-200, `--after` 0-200, `--debounce` 1-60, `--` separator required, pattern max 512 chars.
+- [ ] **Step 3: `parseTime`** - `parseLoop`: single int+unit (s/m/h), min 10s, max 30 days. `parseSchedule`: `in <interval>` or `at <ISO-8601>`, future-only, max 30 days.
+- [ ] **Step 4: Tests** - parseMonitor: accept `/pattern/imu`, plain pattern, reject `g` flag, reject `y` flag, `--before > 200` rejected, `--before 0` accepted, `--debounce 0` rejected, `--debounce 61` rejected, pattern > 512 rejected. parseTime: `5m` parsed, `1h` parsed, `90s` parsed, `0s` rejected, `in 1h` parsed, `at 2026-06-01T00:00:00Z` parsed, past date rejected.
+- [ ] **Step 5: Verify** - `bun test test/parse-monitor.test.ts test/parse-time.test.ts`. Expected: all pass.
+
+---
+
+### Task 4: JobRegistry (in-memory state management)
+
+**Files:** `src/job-registry.ts`
+**Tests:** `test/job-registry.test.ts`
+
+- [ ] **Step 1: Implement `JobRegistry.create`** - assign jobID, track active map, enforce MAX_ACTIVE_JOBS=20 cap. Reject when at limit: `Error: Maximum active jobs (20) reached`.
+- [ ] **Step 2: Implement `JobRegistry.update`** - transition status (active->completed/failed/cancelled), move to completed list at status change.
+- [ ] **Step 3: Implement `JobRegistry.list`** - return all active jobs sorted by createdAt desc. Completed jobs pruned beyond COMPLETED_RETENTION=50 (FIFO oldest first).
+- [ ] **Step 4: Implement `JobRegistry.cancel`** - mark job as cancelled, remove from active map.
+- [ ] **Step 5: Tests** - create 20 jobs succeeds, 21st rejected; list returns sorted by createdAt; cancel removes from active; completed retention prunes to 50.
+- [ ] **Step 6: Verify** - `bun test test/job-registry.test.ts`. Expected: all pass.
+
+---
+
+### Task 5: ProcessRunner (shell spawn + event stream)
+
+**Files:** `src/process-runner.ts`
+**Tests:** `test/process-runner.test.ts`
+
+- [ ] **Step 1: `ProcessRunner.run`** - spawn shell via `child_process.spawn`, pipe stdout/stderr, emit `OutputEvent` on each line. Event has jobID, seq, stream, line, timestamp.
+- [ ] **Step 2: Event stream** - use `readline` interface on stdout/stderr; emit events through `EventTarget` dispatcher. Line length capped at LINE_LENGTH_CAP (8 KiB); truncation note appended.
+- [ ] **Step 3: Cancel** - `cancel()` sends SIGINT; on exit captures exitCode and signal. Timeout: no default timeout (manual cancellation only).
+- [ ] **Step 4: Tests** - spawn `echo hello` produces 1 stdout event; spawn `exit 42` captures exitCode 41; cancel sends SIGINT; long output line > 8 KiB truncated with note.
+- [ ] **Step 5: Verify** - `bun test test/process-runner.test.ts`. Expected: all pass.
+
+---
+
+### Task 6: ReDoS-protected regex worker
+
+**Files:** `src/redos-worker.ts`
+**Tests:** `test/redos-worker.test.ts`
+
+- [ ] **Step 1: `RedoSWorker`** - regex test with Worker thread or `AbortController` timeout per line. MAX 4 concurrent regex tests; queue depth MAX 10.
+- [ ] **Step 2: Timeout** - REDEX_PER_LINE_TIMEOUT_MS=100ms per line. Line skipped if timeout fires; event emitted with `skipped: true` reason.
+- [ ] **Step 3: Backpressure** - reject new lines when queue > 10 or concurrent > 4; drop line with reason.
+- [ ] **Step 4: Tests** - simple pattern matches instantly; pathological pattern `(a+z)+z` times out at 100ms; concurrent=4 enforced; queue > 10 drops new line.
+- [ ] **Step 5: Verify** - `bun test test/redos-worker.test.ts`. Expected: all pass.
+
+---
+
+### Task 7: MonitorEngine (regex match, window, ring buffer, dedupe, debounce)
+
+**Files:** `src/monitor-engine.ts`
+**Tests:** `test/monitor-engine.test.ts`
+
+- [ ] **Step 1: Ring buffer** - MON_RING_BUFFER_SIZE=50_000 lines circular buffer. Append on each OutputEvent; wrap at capacity (overwrite oldest).
+- [ ] **Step 2: Regex match** - on match: build match window (before/after context lines). Dedupe: skip if match line index already within previous match window.
+- [ ] **Step 3: Debounce timer** - debounce seconds (default 5s). On match, cancel previous debounce timer; start new timer. After wait completes: schedule delivery + reset. If MON_AFTER_WAIT_MS (5s) elapses without new input on stdout: trigger final flush delivery regardless of debounce.
+- [ ] **Step 4: Delivery payload** - build DeliveryPayload with nonce-fenced raw output, directive, matched lines, window context, event count. Apply caps: MON_DELIVERY_BYTES_CAP (16 KiB), MON_DELIVERY_EVENTS_CAP (200 events).
+- [ ] **Step 5: Tests** - ring buffer cycles at 50_000; match window includes before/after; dedupe rejects overlapping match; debounce timer resets on new match; final flush fires after 5s silence.
+- [ ] **Step 6: Verify** - `bun test test/monitor-engine.test.ts`. Expected: all pass.
+
+---
+
+### Task 8: PromptScheduler (loop interval + schedule one-shot)
+
+**Files:** `src/prompt-scheduler.ts`
+**Tests:** no standalone test (integrated in Task 14)
+
+- [ ] **Step 1: `PromptScheduler.scheduleLoop`** - `setInterval` with parsed interval. On each tick: snapshot active output buffer; build DeliveryPayload (coalescedTickCount tracks ticks since last delivery).
+- [ ] **Step 2: `PromptScheduler.scheduleOnce`** - `setTimeout` at fireAt. On fire: build DeliveryPayload with prompt text.
+- [ ] **Step 3: Cancel** - clear interval/timeout on job cancel.
+
+---
+
+### Task 9: DeliveryFormatter (nonce-fenced output, directive, redaction)
+
+**Files:** `src/delivery-formatter.ts`
+
+- [ ] **Step 1: Nonce generation** - `crypto.randomUUID()` per delivery; fence raw output in `--- <nonce> ---` block markers.
+- [ ] **Step 2: Directive** - `## opencode-monitor: <kind> <jobID> <status> <directive>` prefix for auto-submit prompt.
+- [ ] **Step 3: Redaction** - `--before`/`--after` context, matched lines, event count (MON_DELIVERY_EVENTS_CAP). Truncate raw output when exceeding MON_DELIVERY_BYTES_CAP; append truncation note.
+- [ ] **Step 4: `buildPrompt`** - assemble: directive + nonce fenced output + context summary + raw output block.
+- [ ] **Step 5: Verify** - `bun test test/delivery-formatter.test.ts`. Expected: all pass.
+
+---
+
+### Task 10: Notifier (bridge transport) + Plugin IdleGate
+
+**Files:** `src/notifier.ts`, `src/idle-gate.ts`
+
+- [ ] **Step 1: `Notifier`** - dual transport: Unix socket (`net.connect`) or HTTP (`POST /notify/append-submit`). Config from `src/notifier.ts` reading `bridge.socket` path or `bridge.baseURL` from opencode.json.
+- [ ] **Step 2: Retry** - exponential backoff on bridge unavailable (max 3 retries); persist queued payloads if bridge down.
+- [ ] **Step 3: `IdleGate` (plugin side)** - interface for bridge idle gate: `isBridgeAvailable()`, `queue(payload)`, `flush()`. Plugin owns no session status cache; defers to bridge.
+- [ ] **Step 4: Tests** - notifier: config from path/file; HTTP fallback; retry on 503. idle-gate: bridgeAvailable false queues; true flushes.
+- [ ] **Step 5: Verify** - `bun test test/notifier.test.ts test/idle-gate.test.ts`. Expected: all pass.
+
+---
+
+### Task 11: Bridge (IdleQueue + server)
+
+**Files:** `bridge/server.ts`, `src/bridge-server.ts`, `src/bridge-queue.ts`
+**Tests:** `test/bridge-queue.test.ts`
+
+- [ ] **Step 1: `BridgeServer`** - HTTP + Unix socket server. `POST /notify/append-submit` endpoint: receive AutoSubmitRequest with sessionID, route to bridge.
+- [ ] **Step 2: `IdleQueue`** - per-session queue of DeliveryPayload. Status cache: `sessions.get(sessionID).status.type` is `idle`/`busy`/`retry`. On `notifications/opencode/session/status`: update status, flush queue if now idle.
+- [ ] **Step 3: Coalescing** - `/loop` ticks merge into single payload per interval (coalescedTickCount). `bg`/`mon`/`sched` payloads retained full.
+- [ ] **Step 4: Bounds** - DELIVERY_QUEUE_PER_JOB_CAP=20, DELIVERY_QUEUE_GLOBAL_CAP=100, DELIVERY_QUEUE_BYTES_CAP=1 MiB. Over-capacity: drop oldest delivery, log warning.
+- [ ] **Step 5: Tests** - bridge-queue: enqueue 21 for single job drops oldest; global cap 101 drops oldest; status busy queues; status idle flushes; retry loops on bridge down.
+- [ ] **Step 6: Verify** - `bun test test/bridge-queue.test.ts`. Expected: all pass.
+
+---
+
+### Task 12: Command Handlers
+
+**Files:** `src/command-handlers.ts`
+**Tests:** `test/command-handlers.test.ts`
+
+- [ ] **Step 1: `/background <cmd>`** - parse args, create bg job in JobRegistry, spawn ProcessRunner, collect output, deliver on completion/cancel with AutoSubmitRequest (`submit: true`).
+- [ ] **Step 2: `/monitor --regex <p> [--before|--after|--debounce] -- <cmd>`** - parse args, create mon job, spawn ProcessRunner, connect MonitorEngine for regex pipeline, deliver on match/after/debounce.
+- [ ] **Step 3: `/loop <interval> <prompt>`** - parse args, create loop job, set up interval timer, coalesce ticks, deliver per interval.
+- [ ] **Step 4: `/schedule <in|at> <time> <prompt>`** - parse args, create sched job, set one-shot timer, deliver at fire time.
+- [ ] **Step 5: `/jobs`** - list active and recent completed jobs from JobRegistry.
+- [ ] **Step 6: `/cancel <jobID>`** - find and cancel job; update status to cancelled.
+- [ ] **Step 7: Tests** - handler wiring for all 6 commands; sessionID gate (reject without sessionID); args validation passes to parser.
+- [ ] **Step 8: Verify** - `bun test test/command-handlers.test.ts`. Expected: all pass.
+
+---
+
+### Task 13: Integration tests
+
+**Files:** `test/integration.test.ts`
+
+- [ ] **Step 1: `/background` end-to-end** - start `echo hello`, verify job created (bg kind), output captured, auto-submit prompt delivered on completion.
+- [ ] **Step 2: `/monitor` end-to-end** - `tail -f` with regex match, verify match window window, after wait delivery, debounce timer behavior.
+- [ ] **Step 3: `/loop` end-to-end** - interval ticks, coalesced payload, lastTickAt tracked.
+- [ ] **Step 4: `/schedule` end-to-end** - one-shot delivery at fire time, `at` ISO datetime parsed correctly.
+- [ ] **Step 5: Busy gate** - bridge session status busy: deliveries queued. Status becomes idle: queue flushed. Max queue: oldest dropped.
+- [ ] **Step 6: Cancel** - `/cancel <jobID>` cancels active job. Status transition to cancelled.
+- [ ] **Step 7: Max jobs** - 20 active jobs accepted; 21st rejected with error.
+- [ ] **Step 8: Verify** - `bun test test/integration.test.ts`. Expected: all pass.
+
+---
+
+### Task 14: README documentation
+
+**Files:** `docs/README.md`
+
+- [ ] **Step 1: Installation** - how to register plugin and bridge in `opencode.json`.
+- [ ] **Step 2: Commands reference** - `/background`, `/monitor`, `/loop`, `/schedule`, `/jobs`, `/cancel` with argument syntax and examples.
+- [ ] **Step 3: Idle/busy behavior** - session status notifications, queue flush, auto-submit gating.
+- [ ] **Step 4: Safety notes** - MAX_ACTIVE_JOBS=20 cap; ReDoS protection (100ms, 4 concurrent); line/truncation caps; ring buffer.
+- [ ] **Step 5: Limitations** - in-memory only (no persistence across restarts); bridge required for auto-submit; sessionID required.
+
+---
+
+## Final Validation Commands
+
+- `bun run build` - zero compilation errors
+- `bun test` - all tests pass (parser, registry, runner, worker, monitor, scheduler, bridge-queue, command-handlers, integration)
+- `bun run bridge` - bridge server starts, exposes `POST /notify/append-submit`
+- Plan file self-check: `grep -c "^### Task" docs/plans/2026-05-27-opencode-monitor-plugin-implementation.md` returns 14
+- Plan file self-check: `grep -ciE "TODO|placeholder|outline|similar.to|TBD" docs/plans/2026-05-27-opencode-monitor-plugin-implementation.md` returns 0
+
