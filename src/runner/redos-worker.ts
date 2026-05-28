@@ -104,19 +104,29 @@ class WorkerPool {
 
     return new Promise<WorkerResult>((resolve, reject) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = (ok: boolean, result: WorkerResult | Error) => {
         if (settled) return;
         settled = true;
         ok ? resolve(result as WorkerResult) : reject(result as Error);
       };
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+      };
 
-      const timer = setTimeout(() => {
-        worker.terminate();
-        settle(false, new RedosTimeoutError());
-      }, timeoutMs);
+      worker.once('online', () => {
+        if (settled) return;
+        timer = setTimeout(() => {
+          worker.terminate();
+          settle(false, new RedosTimeoutError());
+        }, timeoutMs);
+      });
 
       worker.once('message', (msg: WorkerMessage) => {
-        clearTimeout(timer);
+        clearTimer();
         if ((msg as WorkerResult).ok) {
           settle(true, msg as WorkerResult);
         } else {
@@ -125,11 +135,12 @@ class WorkerPool {
       });
 
       worker.once('error', (err) => {
-        clearTimeout(timer);
+        clearTimer();
         settle(false, err);
       });
 
       worker.once('exit', () => {
+        clearTimer();
         settle(false, new RedosTimeoutError('worker closed'));
         this.#freeSlot(worker);
       });
