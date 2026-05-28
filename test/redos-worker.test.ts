@@ -86,6 +86,42 @@ describe('ReDoSWorker', () => {
     Promise.allSettled(pending);
   });
 
+  // -- Slot cleanup on timeout ---------------------------------
+
+  it('frees pool slots after timed-out workers', async () => {
+    // Saturate all REDOS_MAX_CONCURRENT slots with very short timeouts
+    const pending = Array.from({ length: REDOS_MAX_CONCURRENT }, () =>
+      worker.test('x', '', 'x', 1), // 1ms timeout — will almost certainly expire
+    );
+
+    // All 4 should reject (or at least most)
+    const results = await Promise.allSettled(pending);
+    // At least some rejections expected
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(rejected.length).toBeGreaterThan(0);
+
+    // After timeouts, a new request must succeed — slots must be freed
+    const matched = await worker.test('y', '', 'y');
+    expect(matched).toBe(true);
+    await worker.close();
+  });
+
+  it('pool remains functional after multiple rounds of timeouts', async () => {
+    // Round 1: saturate and timeout
+    const round1 = Array.from({ length: REDOS_MAX_CONCURRENT }, () =>
+      worker.test('timeout', '', 'timeout', 1),
+    );
+    await Promise.allSettled(round1);
+
+    // Round 2: should all succeed normally (slots were freed in round 1)
+    const round2 = Array.from({ length: REDOS_MAX_CONCURRENT }, (_, i) =>
+      worker.test('ok' + i, '', 'ok' + i),
+    );
+    const results = await Promise.all(round2);
+    expect(results.every((r) => r === true)).toBe(true);
+    await worker.close();
+  });
+
   // -- close() -------------------------------------------------
 
   it('close() shuts down pool and allows new instance', async () => {

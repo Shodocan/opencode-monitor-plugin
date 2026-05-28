@@ -102,32 +102,42 @@ class WorkerPool {
     this.#pool.add(worker);
 
     return new Promise<WorkerResult>((resolve, reject) => {
+      let settled = false;
+      const settle = (ok: boolean, result: WorkerResult | Error) => {
+        if (settled) return;
+        settled = true;
+        ok ? resolve(result as WorkerResult) : reject(result as Error);
+      };
+
       const timer = setTimeout(() => {
         worker.terminate();
-        reject(new RedosTimeoutError());
+        settle(false, new RedosTimeoutError());
       }, timeoutMs);
 
       worker.once('message', (msg: WorkerMessage) => {
         clearTimeout(timer);
-        this.#freeSlot(worker);
         if ((msg as WorkerResult).ok) {
-          resolve(msg as WorkerResult);
+          settle(true, msg as WorkerResult);
         } else {
-          reject(new Error((msg as WorkerError).error));
+          settle(false, new Error((msg as WorkerError).error));
         }
       });
 
       worker.once('error', (err) => {
         clearTimeout(timer);
+        settle(false, err);
+      });
+
+      worker.once('exit', () => {
         this.#freeSlot(worker);
-        reject(err);
       });
     });
   }
 
   #freeSlot(worker: Worker): void {
+    if (!this.#pool.has(worker)) return;
     this.#pool.delete(worker);
-    this.#pending -= 1;
+    if (this.#pending > 0) this.#pending -= 1;
     if (this.#queue.length > 0 && this.#pending < REDOS_MAX_CONCURRENT) {
       const entry = this.#queue.shift()!;
       clearTimeout(entry.timer);

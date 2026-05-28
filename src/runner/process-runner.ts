@@ -220,6 +220,14 @@ export class ProcessRunner extends EventEmitter {
         tails.get(type)!.add(line);
       }
     });
+
+    stream.once('end', () => {
+      // Flush any remaining partial line (no trailing newline).
+      if (buffer.length > 0) {
+        this.#emit(jobID, type, ++seq, buffer);
+        tails.get(type)!.add(buffer);
+      }
+    });
   }
 
   #emit(jobID: string, stream: OutputStream, seq: number, line: string): void {

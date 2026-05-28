@@ -127,6 +127,44 @@ describe('ProcessRunner', () => {
     runner.dispose(id);
   });
 
+  // -- Partial line flush on stream end -------------------------
+
+  it('flushes final partial line on stream end (no trailing newline)', async () => {
+    const id = 'partial-flush';
+    const events: OutputEvent[] = [];
+    runner.on('output', (ev) => {
+      if (ev.jobID === id) events.push(ev);
+    });
+    const { exitPromise } = runner.run(id, "printf 'done'");
+    await exitPromise;
+    const stdoutLines = events.filter((e) => e.stream === 'stdout').map((e) => e.line);
+    expect(stdoutLines).toContain('done');
+    runner.dispose(id);
+  });
+
+  it('tail includes final partial line', async () => {
+    const id = 'partial-tail';
+    const { exitPromise } = runner.run(id, "printf 'hello world'");
+    await exitPromise;
+    const tail = runner.tail(id, 'stdout');
+    expect(tail).toContain('hello world');
+    runner.dispose(id);
+  });
+
+  it('avoids synthetic trailing empty events on partial lines', async () => {
+    const id = 'no-synthetic';
+    const events: OutputEvent[] = [];
+    runner.on('output', (ev) => {
+      if (ev.jobID === id) events.push(ev);
+    });
+    // "done" has no trailing newline, so no empty line should be emitted
+    const { exitPromise } = runner.run(id, "printf 'done'");
+    await exitPromise;
+    // No empty-string lines expected
+    expect(events.some((e) => e.line.length === 0)).toBe(false);
+    runner.dispose(id);
+  });
+
   // -- Tail buffer --------------------------------------------
 
   it('stores rolling tail lines within cap', async () => {
