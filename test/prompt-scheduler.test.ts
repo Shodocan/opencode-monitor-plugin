@@ -328,6 +328,34 @@ describe('PromptScheduler', () => {
       expect(delivery.mock.calls[0]).toBeTruthy();
       s.destroy();
     });
+
+    it('loop survives async delivery rejection without unhandled rejection', async () => {
+      delivery = vi.fn(() => Promise.reject(new Error('async boom')));
+      const s = scheduler(delivery);
+
+      s.scheduleLoop(mkLoop({ intervalMs: 200 }));
+      expect(delivery).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(delivery).toHaveBeenCalledTimes(2);
+      s.destroy();
+    });
+
+    it('one-shot cleans active state after async delivery rejection', async () => {
+      delivery = vi.fn(() => Promise.reject(new Error('async fail')));
+      const s = scheduler(delivery);
+
+      s.scheduleOnce(mkSchedule({ runAt: new Date(500) }));
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(delivery).toHaveBeenCalledTimes(1);
+      expect(s.activeJobs.has('sched-1')).toBe(false);
+      s.destroy();
+    });
   });
 
   // -- no backlog --

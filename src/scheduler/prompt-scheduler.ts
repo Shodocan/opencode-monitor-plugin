@@ -35,8 +35,8 @@ export class PromptScheduler {
    * Start a looping scheduler that fires every `intervalMs`.
    * Each fire chains the next setTimeout after delivery completes.
    * The loop never builds a backlog — only one tick is active at a time.
-   * If delivery throws, the loop survives (reschedules) and the error
-   * propagates via the delivery callback caller's error handling.
+   * If delivery throws or rejects, the loop survives and reschedules after
+   * the callback settles. Delivery errors are swallowed by this scheduler.
    */
   scheduleLoop(cfg: LoopConfig): void {
     if (this.active.has(cfg.jobID)) return;
@@ -61,12 +61,13 @@ export class PromptScheduler {
 
     const timer = setTimeout(() => {
       this.timers.delete(id);
+      const cleanup = () => this.active.delete(id);
       try {
-        this.delivery({ sessionID, jobID: id, kind, text: prompt, submit: true });
+        const result = this.delivery({ sessionID, jobID: id, kind, text: prompt, submit: true });
+        if (result && typeof result.then === 'function') result.catch(() => {}).finally(cleanup);
+        else cleanup();
       } catch {
-        // Swallow: one-shot delivery errors must not leak active state.
-      } finally {
-        this.active.delete(id);
+        cleanup();
       }
     }, delay);
 
@@ -123,15 +124,20 @@ export class PromptScheduler {
       submit: true as const,
     };
 
-    try {
-      this.delivery(request);
-    } catch {
-      // Swallow: delivery errors must not kill the loop chain.
-    } finally {
+    const scheduleNext = () => {
+      if (!this.active.has(cfg.jobID)) return;
       const timer = setTimeout(() => {
         this.tickLoop(cfg);
       }, cfg.intervalMs);
       this.timers.set(cfg.jobID, timer);
+    };
+
+    try {
+      const result = this.delivery(request);
+      if (result && typeof result.then === 'function') result.catch(() => {}).finally(scheduleNext);
+      else scheduleNext();
+    } catch {
+      scheduleNext();
     }
   }
 }
