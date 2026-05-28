@@ -20,12 +20,12 @@ describe('ReDoSWorker', () => {
   // -- Basic matches ------------------------------------------
 
   it('returns true for matching pattern', async () => {
-    const matched = await worker.test('hello', '', 'hello world');
+    const matched = await worker.test('hello', '', 'hello world', 1_000);
     expect(matched).toBe(true);
   });
 
   it('returns false for non-matching pattern', async () => {
-    const matched = await worker.test('xyz', '', 'hello world');
+    const matched = await worker.test('xyz', '', 'hello world', 1_000);
     expect(matched).toBe(false);
   });
 
@@ -43,14 +43,14 @@ describe('ReDoSWorker', () => {
   // -- check() alias -------------------------------------------
 
   it('check() is a no-flags alias for test()', async () => {
-    const matched = await worker.check('hello', 'hello world');
+    const matched = await worker.check('hello', 'hello world', 1_000);
     expect(matched).toBe(true);
   });
 
   // -- Flags --------------------------------------------------
 
   it('respects regex flags via test()', async () => {
-    const matched = await worker.test('hello', 'i', 'HELLO world');
+    const matched = await worker.test('hello', 'i', 'HELLO world', 1_000);
     expect(matched).toBe(true);
   });
 
