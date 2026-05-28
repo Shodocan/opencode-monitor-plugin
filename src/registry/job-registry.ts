@@ -29,6 +29,7 @@ export interface JobRegistryEntry {
   sessionRef: string;
   deliveryStatus: DeliveryStatus;
   queueDroppedCount: number;
+  createdAt: number;
 }
 
 export class JobRegistry {
@@ -73,6 +74,7 @@ export class JobRegistry {
       sessionRef: this.sessionRef,
       deliveryStatus: 'pending',
       queueDroppedCount: 0,
+      createdAt: Date.now(),
     };
 
     this.#active.set(jobID, entry);
@@ -83,17 +85,19 @@ export class JobRegistry {
    * Get a job by ID.  Returns `undefined` when not found.
    */
   get(jobID: string): JobStatus | undefined {
-    return this.#toStatus(this.#active.get(jobID) ?? this.#completed.find((e) => e.jobID === jobID));
+    const entry = this.#findEntry(jobID);
+    return entry ? this.#toStatus(entry) : undefined;
   }
 
-  /** List all jobs (active + recently completed). */
+  /** List all jobs (active + recently completed), sorted by createdAt descending. */
   list(): JobStatus[] {
-    const statuses: JobStatus[] = [];
+    const all: JobRegistryEntry[] = [];
     for (const [, entry] of this.#active) {
-      statuses.push(this.#toStatus(entry));
+      all.push(entry);
     }
-    statuses.push(...this.#completed.map(this.#toStatus));
-    return statuses;
+    all.push(...this.#completed);
+    all.sort((a, b) => b.createdAt - a.createdAt);
+    return all.map(this.#toStatus);
   }
 
   /**
@@ -107,15 +111,9 @@ export class JobRegistry {
     if (!entry) {
       const inCompleted = this.#completed.find((e) => e.jobID === jobID);
       if (!inCompleted) {
-        throw new Error(`job ${jobID} not found.`);
+        throw new Error(`Error: job ${jobID} not found.`);
       }
-      throw new Error(`job ${jobID} cannot be cancelled (status: ${inCompleted.status}).`);
-    }
-
-    if (entry.status !== 'active') {
-      this.#active.delete(jobID);
-      this.#completed.push(entry);
-      throw new Error(`job ${jobID} cannot be cancelled (status: ${entry.status}).`);
+      throw new Error(`Error: job ${jobID} cannot be cancelled (status: ${inCompleted.status}).`);
     }
 
     entry.status = 'cancelled';
@@ -156,9 +154,9 @@ export class JobRegistry {
    * @throws `Error: job {jobID} not found.`
    */
   updateDeliveryStatus(jobID: string, deliveryStatus: DeliveryStatus): void {
-    const entry = this.#active.get(jobID) ?? this.#completed.find((e) => e.jobID === jobID);
+    const entry = this.#findEntry(jobID);
     if (!entry) {
-      throw new Error(`job ${jobID} not found.`);
+      throw new Error(`Error: job ${jobID} not found.`);
     }
     entry.deliveryStatus = deliveryStatus;
   }
@@ -169,17 +167,23 @@ export class JobRegistry {
    * @throws `Error: job {jobID} not found.`
    */
   incrementQueueDropped(jobID: string, count = 1): void {
-    const entry = this.#active.get(jobID) ?? this.#completed.find((e) => e.jobID === jobID);
+    const entry = this.#findEntry(jobID);
     if (!entry) {
-      throw new Error(`job ${jobID} not found.`);
+      throw new Error(`Error: job ${jobID} not found.`);
     }
     entry.queueDroppedCount += count;
   }
 
   // -- Internal --------------------------------------------------
 
-  #toStatus(entry: JobRegistryEntry | undefined): JobStatus | undefined {
-    if (!entry) return undefined;
+  /**
+   * Find an entry in active or completed maps.
+   */
+  #findEntry(jobID: string): JobRegistryEntry | undefined {
+    return this.#active.get(jobID) ?? this.#completed.find((e) => e.jobID === jobID);
+  }
+
+  #toStatus(entry: JobRegistryEntry): JobStatus {
     return {
       jobID: entry.jobID,
       kind: entry.kind,

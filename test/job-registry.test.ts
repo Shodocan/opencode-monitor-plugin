@@ -82,18 +82,30 @@ describe('JobRegistry', () => {
 
   it('throws "not found" for unknown jobID', () => {
     const [reg] = mk();
-    expect(() => reg.cancel('ghost_0')).toThrow('job ghost_0 not found.');
+    expect(() => reg.cancel('ghost_0')).toThrow('Error: job ghost_0 not found.');
   });
 
   it('throws "cannot be cancelled" for already-cancelled job', () => {
     const [reg, jobID] = mk();
     reg.cancel(jobID);
-    expect(() => reg.cancel(jobID)).toThrow(`job ${jobID} cannot be cancelled (status: cancelled).`);
+    expect(() => reg.cancel(jobID)).toThrow(`Error: job ${jobID} cannot be cancelled (status: cancelled).`);
+  });
+
+  it('throws "cannot be cancelled" for completed job', () => {
+    const [reg, jobID] = mk();
+    reg.complete(jobID);
+    expect(() => reg.cancel(jobID)).toThrow(`Error: job ${jobID} cannot be cancelled (status: completed).`);
+  });
+
+  it('throws "cannot be cancelled" for failed job', () => {
+    const [reg, jobID] = mk();
+    reg.fail(jobID);
+    expect(() => reg.cancel(jobID)).toThrow(`Error: job ${jobID} cannot be cancelled (status: failed).`);
   });
 
   it('throws "not found" for never-registered job', () => {
     const reg = new JobRegistry('s');
-    expect(() => reg.cancel('bg_0')).toThrow('job bg_0 not found.');
+    expect(() => reg.cancel('bg_0')).toThrow('Error: job bg_0 not found.');
   });
 
   // -- active limit ------------------------------------------------
@@ -147,7 +159,7 @@ describe('JobRegistry', () => {
 
   it('throws "not found" for deliveryStatus update on unknown job', () => {
     const [reg] = mk();
-    expect(() => reg.updateDeliveryStatus('unknown_0', 'sent')).toThrow('job unknown_0 not found.');
+    expect(() => reg.updateDeliveryStatus('unknown_0', 'sent')).toThrow('Error: job unknown_0 not found.');
   });
 
   // -- queueDroppedCount ------------------------------------------
@@ -174,7 +186,7 @@ describe('JobRegistry', () => {
 
   it('throws "not found" for incrementQueueDropped on unknown job', () => {
     const [reg] = mk();
-    expect(() => reg.incrementQueueDropped('ghost_0')).toThrow('job ghost_0 not found.');
+    expect(() => reg.incrementQueueDropped('ghost_0')).toThrow('Error: job ghost_0 not found.');
   });
 
   // -- complete / fail transition ----------------------------------
