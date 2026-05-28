@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdir, open, readFile, stat, chmod } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { chmod, lstat, mkdir, open, readFile, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { IdleQueue, type SessionStatus } from './idle-queue.js';
 import type { AutoSubmitRequest, JobKind } from '../types.js';
 
@@ -31,8 +32,8 @@ const UNSAFE_TOKENS = new Set(['default', 'example', 'example-token', 'changeme'
 
 function resolveConfigPath(path?: string): string {
   const resolved = path ?? process.env[CONFIG_ENV];
-  if (!resolved) throw new Error(`${CONFIG_ENV} is required`);
-  return resolved;
+  if (resolved) return resolved;
+  return join(process.env.XDG_RUNTIME_DIR || tmpdir(), 'opencode-monitor', 'bridge.json');
 }
 
 function generateBearerToken(): string {
@@ -68,6 +69,14 @@ export async function writeBridgeConfig(path: string, config: BridgeConfig): Pro
   const parent = dirname(path);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await chmod(parent, 0o700);
+  const parentInfo = await lstat(parent);
+  if (parentInfo.isSymbolicLink()) throw new Error('bridge config parent symlink is invalid');
+
+  const existing = await lstat(path).catch((error: unknown) => {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (existing?.isSymbolicLink()) throw new Error('bridge config symlink is invalid');
 
   const handle = await open(path, 'w', 0o600);
   try {
@@ -80,7 +89,8 @@ export async function writeBridgeConfig(path: string, config: BridgeConfig): Pro
 
 export async function readBridgeConfig(path?: string): Promise<BridgeConfig> {
   const configPath = resolveConfigPath(path);
-  const parentInfo = await stat(dirname(configPath));
+  const parentInfo = await lstat(dirname(configPath));
+  if (parentInfo.isSymbolicLink()) throw new Error('bridge config parent symlink is invalid');
   const parentMode = parentInfo.mode & 0o777;
   if (parentMode !== 0o700) {
     throw new Error('bridge config parent permissions are invalid');
@@ -89,6 +99,8 @@ export async function readBridgeConfig(path?: string): Promise<BridgeConfig> {
     throw new Error('bridge config parent owner is invalid');
   }
 
+  const linkInfo = await lstat(configPath);
+  if (linkInfo.isSymbolicLink()) throw new Error('bridge config symlink is invalid');
   const info = await stat(configPath);
   const mode = info.mode & 0o777;
   if (mode !== 0o600) {
@@ -200,7 +212,14 @@ export class BridgeServer {
     const hostname = host === '::1' ? '[::1]' : host;
     this.#server = server;
     this.#config = { url: `http://${hostname}:${address.port}`, token };
-    await writeBridgeConfig(resolveConfigPath(this.#options.configPath), this.#config);
+    try {
+      await writeBridgeConfig(resolveConfigPath(this.#options.configPath), this.#config);
+    } catch (error) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      this.#server = undefined;
+      this.#config = undefined;
+      throw error;
+    }
     return this.#config;
   }
 

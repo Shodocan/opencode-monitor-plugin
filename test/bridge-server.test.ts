@@ -1,4 +1,4 @@
-import { mkdtemp, chmod, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, afterEach, vi } from 'vitest';
@@ -18,8 +18,8 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-function req(sessionID = 's1', jobID = 'bg_1'): AutoSubmitRequest {
-  return { sessionID, jobID, kind: 'bg', text: 'submit me', submit: true };
+function req(sessionID = 's1', jobID = 'bg_1', text = 'submit me'): AutoSubmitRequest {
+  return { sessionID, jobID, kind: 'bg', text, submit: true };
 }
 
 async function tempConfigPath(): Promise<string> {
@@ -58,6 +58,31 @@ describe('bridge config and bearer token handling', () => {
     await chmod(configPath, 0o600);
     await chmod(join(configPath, '..'), 0o755);
     await expect(readBridgeConfig(configPath)).rejects.toThrow(/parent/i);
+  });
+
+  it('rejects config file symlinks on read and write', async () => {
+    const configPath = await tempConfigPath();
+    const targetPath = `${configPath}.target`;
+    await writeBridgeConfig(targetPath, { url: 'http://127.0.0.1:1', token: 'd'.repeat(43) });
+    await symlink(targetPath, configPath);
+
+    await expect(readBridgeConfig(configPath)).rejects.toThrow(/symlink/i);
+    await expect(writeBridgeConfig(configPath, { url: 'http://127.0.0.1:1', token: 'e'.repeat(43) }))
+      .rejects.toThrow(/symlink/i);
+  });
+
+  it('uses XDG_RUNTIME_DIR default config path when env path is absent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'opencode-monitor-xdg-'));
+    vi.stubEnv('OPENCODE_MONITOR_BRIDGE_CONFIG', '');
+    vi.stubEnv('XDG_RUNTIME_DIR', dir);
+    const server = new BridgeServer();
+    servers.push(server);
+
+    await server.start();
+
+    const defaultPath = join(dir, 'opencode-monitor', 'bridge.json');
+    expect((await stat(defaultPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(defaultPath, '..'))).mode & 0o777).toBe(0o700);
   });
 
   it('generates long base64url tokens and rejects unsafe token values', async () => {
@@ -196,5 +221,31 @@ describe('BridgeServer HTTP API', () => {
     expect(delivered.map((payload) => payload.params.sessionID)).toEqual(['s1']);
     server.setSessionStatus('s2', 'idle');
     expect(delivered.map((payload) => payload.params.sessionID)).toEqual(['s1', 's2']);
+  });
+
+  it('retains multiple full payloads for the same non-loop job while busy', async () => {
+    const delivered: AppendNotification[] = [];
+    const server = new BridgeServer({
+      configPath: await tempConfigPath(),
+      onAppend: (payload) => {
+        delivered.push(payload);
+        return true;
+      },
+    });
+    servers.push(server);
+    const config = await server.start();
+    server.setSessionStatus('s1', 'busy');
+
+    const headers = { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' };
+    await fetch(`${config.url}/notify/append-submit`, {
+      method: 'POST', headers, body: JSON.stringify(req('s1', 'mon_1', 'first')),
+    });
+    await fetch(`${config.url}/notify/append-submit`, {
+      method: 'POST', headers, body: JSON.stringify(req('s1', 'mon_1', 'second')),
+    });
+
+    expect(delivered).toEqual([]);
+    server.setSessionStatus('s1', 'idle');
+    expect(delivered.map((payload) => payload.params.text)).toEqual(['first', 'second']);
   });
 });
