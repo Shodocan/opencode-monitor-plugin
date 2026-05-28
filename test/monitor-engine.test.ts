@@ -20,6 +20,9 @@ function makeEventForJob(jobID: string, seq: number, line: string): OutputEvent 
 // ---------------------------------------------------------------------------
 
 describe('MonitorEngine', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
 
   // -- ring cap / truncation --
 
@@ -79,6 +82,20 @@ describe('MonitorEngine', () => {
     expect(events[0].seq).toBe(1);
     expect(events[1].seq).toBe(2);
     expect(events[2].seq).toBe(3);
+  });
+
+  it('should include only the matching line when before=0 and after=0', () => {
+    const onWindow = vi.fn();
+    const engine = new MonitorEngine({
+      jobID: 'job-a', regex: /ERR/, before: 0, after: 0, debounceMs: 0, ringSize: 50, onWindow,
+    });
+
+    engine.ingest(makeEvent(1, 'line1'));
+    engine.ingest(makeEvent(2, 'line2'));
+    engine.ingest(makeEvent(3, 'ERR'));
+
+    expect(onWindow).toHaveBeenCalledTimes(1);
+    expect(onWindow.mock.calls[0][0].events.map((event: OutputEvent) => event.seq)).toEqual([3]);
   });
 
   it('should include after-lines after match', () => {
@@ -221,6 +238,37 @@ describe('MonitorEngine', () => {
     vi.useRealTimers();
   });
 
+  it('should not call onAfterWaitTimeout when after-lines satisfy the window first', () => {
+    vi.useFakeTimers();
+    const onWindow = vi.fn();
+    const onTimeout = vi.fn();
+    const engine = new MonitorEngine({
+      jobID: 'job-a', regex: /ERR/, before: 0, after: 2, debounceMs: 0,
+      afterWaitMs: 100, onWindow, onAfterWaitTimeout: onTimeout,
+    });
+
+    engine.ingest(makeEvent(1, 'ERR'));
+    engine.ingest(makeEvent(2, 'after1'));
+    engine.ingest(makeEvent(3, 'after2'));
+    vi.advanceTimersByTime(100);
+
+    expect(onWindow).toHaveBeenCalledTimes(1);
+    expect(onTimeout).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('should reject invalid constructor options', () => {
+    const base: MonitorEngineOptions = {
+      jobID: 'job-a', regex: /ERR/, before: 0, after: 0, debounceMs: 0, onWindow: vi.fn(),
+    };
+
+    expect(() => new MonitorEngine({ ...base, before: -1 })).toThrow('before');
+    expect(() => new MonitorEngine({ ...base, after: -1 })).toThrow('after');
+    expect(() => new MonitorEngine({ ...base, debounceMs: -1 })).toThrow('debounceMs');
+    expect(() => new MonitorEngine({ ...base, afterWaitMs: -1 })).toThrow('afterWaitMs');
+    expect(() => new MonitorEngine({ ...base, ringSize: 0 })).toThrow('ringSize');
+  });
+
   // -- ignore other jobs --
 
   it('should ignore events from other jobIDs', () => {
@@ -291,6 +339,24 @@ describe('MonitorEngine', () => {
     expect(merged.matchSeqs).toContain(1);
     expect(merged.matchSeqs).toContain(2);
     vi.useRealTimers();
+  });
+
+  it('should merge overlapping windows without redelivering shared seqs', () => {
+    const onWindow = vi.fn();
+    const engine = new MonitorEngine({
+      jobID: 'job-a', regex: /ERR/, before: 1, after: 1, debounceMs: 0, ringSize: 50, onWindow,
+    });
+
+    engine.ingest(makeEvent(1, 'before'));
+    engine.ingest(makeEvent(2, 'ERR-one'));
+    engine.ingest(makeEvent(3, 'ERR-two'));
+    engine.ingest(makeEvent(4, 'after'));
+
+    expect(onWindow).toHaveBeenCalledTimes(2);
+    const deliveredSeqs = onWindow.mock.calls.flatMap(([window]: [MonitorWindow]) =>
+      window.events.map((event) => event.seq),
+    );
+    expect(deliveredSeqs).toEqual([1, 2, 3, 4]);
   });
 
   // -- stdout+stderr ring merge --

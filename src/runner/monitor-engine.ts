@@ -37,7 +37,7 @@ interface ReadyWindow {
 export class MonitorEngine {
   #ring: OutputEvent[] = [];
   #droppedFromRing = 0;
-  #seenSeqs = new Set<number>();
+  #highestSeenSeq = Number.NEGATIVE_INFINITY;
   #deliveredSeqs = new Set<number>();
   #pending: PendingWindow[] = [];
   #ready: ReadyWindow[] = [];
@@ -50,13 +50,16 @@ export class MonitorEngine {
   constructor(private readonly opts: MonitorEngineOptions) {
     this.#afterWaitMs = opts.afterWaitMs ?? MONITOR_AFTER_WAIT_MS;
     this.#ringSize = opts.ringSize ?? MONITOR_RING_BUFFER_EVENTS;
+    this.#validateOptions();
   }
 
   ingest(event: OutputEvent): void {
     if (this.#destroyed) return;
     if (event.jobID !== this.opts.jobID) return;
-    if (this.#seenSeqs.has(event.seq)) return;
-    this.#seenSeqs.add(event.seq);
+    // ProcessRunner emits globally monotonic seqs. Older or equal seqs are
+    // duplicates/out-of-order and cannot safely extend pending windows.
+    if (event.seq <= this.#highestSeenSeq) return;
+    this.#highestSeenSeq = event.seq;
 
     this.#appendToPendingAfterWindows(event);
     this.#appendToRing(event);
@@ -64,8 +67,11 @@ export class MonitorEngine {
     this.opts.regex.lastIndex = 0;
     if (!this.opts.regex.test(event.line)) return;
 
-    const beforeEvents = this.#ring.slice(0, -1).slice(-this.opts.before);
-    const truncated = beforeEvents.length < this.opts.before && this.#droppedFromRing > 0;
+    const beforeEvents = this.opts.before === 0
+      ? []
+      : this.#ring.slice(0, -1).slice(-this.opts.before);
+    const priorSeenCount = this.#droppedFromRing + Math.max(0, this.#ring.length - 1);
+    const truncated = beforeEvents.length < Math.min(this.opts.before, priorSeenCount);
     const pending: PendingWindow = {
       matchSeq: event.seq,
       events: [...beforeEvents, event],
@@ -172,6 +178,7 @@ export class MonitorEngine {
     for (const event of merged.events) {
       this.#deliveredSeqs.add(event.seq);
     }
+    this.#pruneDeliveredSeqs();
     this.opts.onWindow({ jobID: this.opts.jobID, ...merged });
   }
 
@@ -195,5 +202,38 @@ export class MonitorEngine {
       matchSeqs: [...matchSeqs].sort((a, b) => a - b),
       truncated,
     };
+  }
+
+  #pruneDeliveredSeqs(): void {
+    const protectedSeqs = [
+      ...this.#ring.map((event) => event.seq),
+      ...this.#pending.flatMap((window) => window.events.map((event) => event.seq)),
+      ...this.#ready.flatMap((window) => window.events.map((event) => event.seq)),
+    ];
+    if (protectedSeqs.length === 0) {
+      this.#deliveredSeqs.clear();
+      return;
+    }
+    const minProtectedSeq = Math.min(...protectedSeqs);
+    for (const seq of this.#deliveredSeqs) {
+      if (seq < minProtectedSeq) this.#deliveredSeqs.delete(seq);
+    }
+  }
+
+  #validateOptions(): void {
+    const nonNegativeIntegers: Array<[string, number]> = [
+      ['before', this.opts.before],
+      ['after', this.opts.after],
+      ['debounceMs', this.opts.debounceMs],
+      ['afterWaitMs', this.#afterWaitMs],
+    ];
+    for (const [name, value] of nonNegativeIntegers) {
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`MonitorEngine: ${name} must be a non-negative integer`);
+      }
+    }
+    if (!Number.isInteger(this.#ringSize) || this.#ringSize <= 0) {
+      throw new Error('MonitorEngine: ringSize must be a positive integer');
+    }
   }
 }
