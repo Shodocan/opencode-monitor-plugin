@@ -1,4 +1,69 @@
-import { MAX_REGEX_PATTERN_LENGTH, MIN_MONITOR_DEBOUNCE_S, MAX_MONITOR_DEBOUNCE_S, MAX_MONITOR_CONTEXT_LINES } from '../limits.js';
+import {
+  MAX_MONITOR_CONTEXT_LINES,
+  MAX_REGEX_PATTERN_LENGTH,
+  MIN_MONITOR_DEBOUNCE_S,
+  MAX_MONITOR_DEBOUNCE_S,
+} from '../limits.js';
+
+function findSeparator(raw: string): number {
+  // Walk every "--" token; the last standalone "--" is the command separator.
+  let idx = 0;
+  let lastSep: number | null = null;
+
+  while (idx < raw.length) {
+    const p = raw.indexOf('-', idx);
+    if (p < 0) break;
+
+    if (p + 1 < raw.length && raw[p + 1] === '-') {
+      const okBefore = p === 0 || raw[p - 1] === ' ';
+      const okAfter = p + 2 >= raw.length || raw[p + 2] === ' ';
+      if (okBefore && okAfter) lastSep = p;
+      idx = p + 3;
+    } else {
+      idx = p + 1;
+    }
+  }
+  return lastSep ?? -1;
+}
+
+function countConsecutiveBackslashes(s: string, from: number): number {
+  let count = 0;
+  let i = from;
+  while (i >= 0 && s[i] === '\\') {
+    count++;
+    i--;
+  }
+  return count;
+}
+
+function parseRegex(raw: string): { pattern: string; flags: string } {
+  if (raw.startsWith('/')) {
+    let pos = 1;
+    while (pos < raw.length) {
+      if (raw[pos] === '/') {
+        const bsCount = countConsecutiveBackslashes(raw, pos - 1);
+        if (bsCount % 2 === 0) break;
+      }
+      pos++;
+    }
+    if (pos >= raw.length) throw new Error('parseMonitor: unclosed regex pattern');
+    const pattern = raw.slice(1, pos);
+    const flags = raw.slice(pos + 1).trim();
+    if (pattern.length > MAX_REGEX_PATTERN_LENGTH)
+      throw new Error(`parseMonitor: regex pattern exceeds ${MAX_REGEX_PATTERN_LENGTH} characters`);
+    return { pattern, flags };
+  }
+  if (raw.length > MAX_REGEX_PATTERN_LENGTH)
+    throw new Error(`parseMonitor: pattern exceeds ${MAX_REGEX_PATTERN_LENGTH} characters`);
+  return { pattern: raw, flags: '' };
+}
+
+function checkFlags(flags: string): void {
+  for (const ch of flags) {
+    if (ch === 'g') throw new Error("parseMonitor: unsupported regex flag 'g'");
+    if (ch === 'y') throw new Error("parseMonitor: unsupported regex flag 'y'");
+  }
+}
 
 export function parseMonitor(raw: string): {
   regex: RegExp;
@@ -7,133 +72,56 @@ export function parseMonitor(raw: string): {
   debounceMs: number;
   command: string;
 } {
-  // Find the last -- that separates flags from command
-  const sepIndex = findCommandSeparator(raw);
-  if (sepIndex < 0) {
-    throw new Error('monitor: -- separator before command is required');
-  }
-  const command = raw.slice(sepIndex + 3).trim();
-  if (command.length === 0) {
-    throw new Error('monitor: command is empty after --');
-  }
+  const sep = findSeparator(raw);
+  if (sep < 0) throw new Error('parseMonitor: missing -- separator before command');
 
-  const flagSection = raw.slice(0, sepIndex).trim();
+  const command = raw.slice(sep + 2).trim();
+  if (command.length === 0) throw new Error('parseMonitor: command is empty');
 
-  let regexStr: string | null = null;
-  let flagStr = '';
-  let before = -1;
-  let after = -1;
-  let debounceS: number | null = null;
+  const flagsPart = raw.slice(0, sep).trim();
+  let regex: RegExp | null = null;
+  let before: number | null = null;
+  let after: number | null = null;
+  let debounce: number | null = null;
+  let hasRegex = false;
 
-  if (flagSection.length > 0) {
-    const segments = flagSection.split('--');
-    for (let i = 1; i < segments.length; i++) {
-      const seg = segments[i].trim();
-      const parts = seg.split(/\s+/);
-      const key = parts[0];
-
-      if (key === 'regex') {
-        const rawRegex = seg.slice(5).trim();
-        const parsed = parseRegexArg(rawRegex);
-        regexStr = parsed.pattern;
-        flagStr = parsed.flags;
-      } else if (key === 'before') {
-        const n = parseInt(parts[1], 10);
-        if (Number.isNaN(n) || n < 0 || n > MAX_MONITOR_CONTEXT_LINES) {
-          throw new Error(`--before must be 0..${MAX_MONITOR_CONTEXT_LINES}, got ${n}`);
-        }
-        before = n;
-      } else if (key === 'after') {
-        const n = parseInt(parts[1], 10);
-        if (Number.isNaN(n) || n < 0 || n > MAX_MONITOR_CONTEXT_LINES) {
-          throw new Error(`--after must be 0..${MAX_MONITOR_CONTEXT_LINES}, got ${n}`);
-        }
-        after = n;
-      } else if (key === 'debounce') {
-        const n = parseInt(parts[1], 10);
-        if (Number.isNaN(n)) {
-          throw new Error('--debounce must be a number');
-        }
-        debounceS = n;
-      }
+  const segments = flagsPart.split('--');
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (seg.length === 0) continue;
+    if (seg.startsWith('regex ')) {
+      hasRegex = true;
+      const rstr = seg.slice(6).trim();
+      const { pattern, flags } = parseRegex(rstr);
+      checkFlags(flags);
+      regex = new RegExp(pattern, flags);
+    } else if (seg.startsWith('before ')) {
+      const n = Number(seg.slice(7).trim());
+      if (!Number.isInteger(n) || n < 0 || n > MAX_MONITOR_CONTEXT_LINES)
+        throw new Error(`parseMonitor: --before must be 0..${MAX_MONITOR_CONTEXT_LINES}, got ${n}`);
+      before = n;
+    } else if (seg.startsWith('after ')) {
+      const n = Number(seg.slice(6).trim());
+      if (!Number.isInteger(n) || n < 0 || n > 200)
+        throw new Error(`parseMonitor: --after must be 0..${MAX_MONITOR_CONTEXT_LINES}, got ${n}`);
+      after = n;
+    } else if (seg.startsWith('debounce ')) {
+      const n = Number(seg.slice(9).trim());
+      if (!Number.isInteger(n) || n < MIN_MONITOR_DEBOUNCE_S || n > MAX_MONITOR_DEBOUNCE_S)
+        throw new Error(
+          `parseMonitor: --debounce must be ${MIN_MONITOR_DEBOUNCE_S}..${MAX_MONITOR_DEBOUNCE_S}, got ${n}`
+        );
+      debounce = n;
     }
   }
 
-  const defaults = { before: 10, after: 10, debounceMs: 5_000 };
-  if (before < 0) before = defaults.before;
-  if (after < 0) after = defaults.after;
-
-  if (regexStr === null) {
-    throw new Error('monitor: --regex is required');
-  }
-
-  if (debounceS === null) {
-    throw new Error('monitor: --debounce is required (1..60 seconds)');
-  }
-  if (debounceS < MIN_MONITOR_DEBOUNCE_S || debounceS > MAX_MONITOR_DEBOUNCE_S) {
-    throw new Error(`monitor: --debounce must be ${MIN_MONITOR_DEBOUNCE_S}..${MAX_MONITOR_DEBOUNCE_S}, got ${debounceS}`);
-  }
-
-  const regex = new RegExp(regexStr, flagStr);
-  return { regex, before, after, debounceMs: debounceS * 1000, command };
-}
-
-function parseRegexArg(raw: string): { pattern: string; flags: string } {
-  let pattern: string;
-  let flags = '';
-
-  if (raw.startsWith('/')) {
-    const closeSlash = findRegexEndSlash(raw);
-    if (closeSlash < 0) {
-      throw new Error(`monitor: unclosed regex in "${raw}"`);
-    }
-    pattern = raw.slice(1, closeSlash);
-    flags = raw.slice(closeSlash + 1).trim();
-  } else {
-    pattern = raw;
-  }
-
-  if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
-    throw new Error(`monitor: regex pattern exceeds ${MAX_REGEX_PATTERN_LENGTH} characters (${pattern.length})`);
-  }
-
-  // Only i, m, u are supported
-  for (const ch of flags) {
-    if (ch !== 'i' && ch !== 'm' && ch !== 'u') {
-      if (ch === 'g') {
-        throw new Error("monitor: unsupported regex flag 'g' (allowed: i,m,u)");
-      }
-      if (ch === 'y') {
-        throw new Error("monitor: unsupported regex flag 'y' (allowed: i,m,u)");
-      }
-      // Allow unknown flags (not 'g,y') to pass through
-    }
-  }
-
-  return { pattern: raw.startsWith('/') ? pattern : raw, flags };
-}
-
-function findRegexEndSlash(raw: string): number {
-  for (let i = 1; i < raw.length; i++) {
-    if (raw[i] === '/' && raw[i - 1] !== '\\') {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/**
- * Find the last -- that separates flags from the command.
- * Uses a separate `found` variable to avoid overwriting `last` with -1.
- */
-function findCommandSeparator(raw: string): number {
-  let idx = 0;
-  let last = -1;
-  while (idx < raw.length) {
-    const found = raw.indexOf('--', idx);
-    if (found < 0) break;
-    last = found;
-    idx = found + 2;
-  }
-  return last;
+  if (!hasRegex) throw new Error('parseMonitor: --regex is required');
+  if (debounce === null) debounce = 5;
+  return {
+    regex: regex!,
+    before: before ?? 10,
+    after: after ?? 10,
+    debounceMs: debounce * 1_000,
+    command,
+  };
 }
