@@ -270,11 +270,22 @@ describe('IdleQueue /loop coalescing', () => {
 describe('IdleQueue caps', () => {
   it('enforces per-job cap', () => {
     const q = new IdleQueue('busy', deliveryStub);
-    // Same jobID across different sessions so they share the per-job counter
     for (let i = 0; i < MAX_PENDING_PER_JOB + 2; i++) {
-      q.enqueue(req(`s${i}`, 'shared_job', 'bg', `payload-${i}`));
+      q.enqueue(req('s1', 'shared_job', 'bg', `payload-${i}`));
     }
     expect(q.dropped).toBeGreaterThan(0);
+  });
+
+  it('scopes per-job cap by sessionID', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    for (let i = 0; i < MAX_PENDING_PER_JOB; i++) {
+      q.enqueue(req('s1', 'shared_job', 'bg', `s1-${i}`));
+    }
+
+    q.enqueue(req('s2', 'shared_job', 'bg', 's2-payload'));
+
+    expect(q.dropped).toBe(0);
+    expect(q.peek().some((entry) => entry.req.sessionID === 's2')).toBe(true);
   });
 
   it('enforces global cap with FIFO eviction', () => {

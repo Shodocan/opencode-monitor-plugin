@@ -21,5 +21,8 @@ Thumbs.db
 # Serena state
 .serena/
 
+# CodeGraph state
+.codegraph/
+
 # Git worktrees
 .worktrees/

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { ReDoSWorker, RedosTimeoutError } from '../src/runner/redos-worker.js';
 import { REDOS_TIMEOUT_MS, REDOS_MAX_CONCURRENT, REDOS_MAX_QUEUED_PER_MONITOR } from '../src/limits.js';
 
@@ -11,6 +11,10 @@ describe('ReDoSWorker', () => {
 
   beforeEach(() => {
     worker = new ReDoSWorker();
+  });
+
+  afterEach(async () => {
+    await worker.close().catch(() => {});
   });
 
   // -- Basic matches ------------------------------------------
@@ -68,7 +72,7 @@ describe('ReDoSWorker', () => {
 
   it('handles multiple concurrent checks without deadlock', async () => {
     const promises = Array.from({ length: REDOS_MAX_CONCURRENT * 2 }, (_, i) =>
-      worker.test(`^test${i}$`, '', `test${i}`),
+      worker.test(`^test${i}$`, '', `test${i}`, 1_000),
     );
     const results = await Promise.all(promises);
     expect(results.every((r) => r === true)).toBe(true);
@@ -137,12 +141,13 @@ describe('ReDoSWorker', () => {
       { length: REDOS_MAX_QUEUED_PER_MONITOR },
       (_, i) => w.test('q' + i, '', 'q' + i, 1),
     );
+    const queueSettled = Promise.allSettled(queueEntries);
 
     // 3. Workers finish → freeSlot drains stale queue entries.
     await Promise.allSettled(saturate);
 
     // 4. Queue entries are rejected by their own timers.
-    await Promise.allSettled(queueEntries);
+    await queueSettled;
 
     // 5. A fresh request must succeed — queue is clean.
     const result = await w.test('final', '', 'final');
@@ -164,12 +169,13 @@ describe('ReDoSWorker', () => {
     const queued = Array.from({ length: REDOS_MAX_QUEUED_PER_MONITOR }, () =>
       w.test('quick', '', 'q', 2),
     );
+    const queuedSettled = Promise.allSettled(queued);
 
     // The very next call must throw because queue is full.
     expect(() => w.test('overflow', '', 'x')).toThrow('ReDoS queue full');
 
     // Queue entries time out before workers finish; they must be removed from #queue.
-    const settled = await Promise.allSettled(queued);
+    const settled = await queuedSettled;
     expect(settled.every((r) => r.status === 'rejected')).toBe(true);
 
     // Workers finish → freed slots drain stale entries, not re-run them.

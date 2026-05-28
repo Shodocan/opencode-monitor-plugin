@@ -64,6 +64,7 @@ export class IdleQueue {
   #sessionStatuses: Map<string, SessionStatus>;
   #pending: Map<string, IdlePendingEntry>;
   #globalOrder: string[];
+  #nextEntryID = 0;
 
   byteSize = 0;
   dropped = 0;
@@ -152,7 +153,10 @@ export class IdleQueue {
   deliver(req: AutoSubmitRequest): void {
     this.enqueue(req);
     const status = this.#sessionStatuses.get(req.sessionID);
-    if (isIdle(status ?? this.status)) {
+    if (isIdle(status)) {
+      this.flush(req.sessionID);
+    } else if (status === undefined && this.#sessionStatuses.has('__default__') && isIdle(this.status)) {
+      // Legacy single-status mode used by focused unit tests.
       this.flush();
     }
   }
@@ -235,12 +239,17 @@ export class IdleQueue {
     }
   }
 
-  #key(req: AutoSubmitRequest): string {
+  #coalescedKey(req: AutoSubmitRequest): string {
     return `${req.sessionID}::${req.jobID}`;
   }
 
+  #standardKey(req: AutoSubmitRequest): string {
+    this.#nextEntryID += 1;
+    return `${req.sessionID}::${req.jobID}::${this.#nextEntryID}`;
+  }
+
   #enqueueLoop(req: AutoSubmitRequest, byteSize: number): void {
-    const key = this.#key(req);
+    const key = this.#coalescedKey(req);
     const existing = this.#pending.get(key);
 
     // Coalesce: replace latest, bump tick count
@@ -259,21 +268,21 @@ export class IdleQueue {
       coalesced: true,
       coalescedTickCount: 1,
     };
-    this.#applyCaps(req.jobID);
+    this.#applyCaps();
     this.#pending.set(key, entry);
     this.#globalOrder.push(key);
     this.byteSize += byteSize;
   }
 
   #enqueueStandard(req: AutoSubmitRequest, byteSize: number): void {
-    const key = this.#key(req);
+    const key = this.#standardKey(req);
     const entry: IdlePendingEntry = { req, byteSize };
-    this.#applyCaps(req.jobID);
+    this.#applyCaps();
 
     // Per-job cap: check count for this specific job before enqueueing
-    const jobEntries = this.#countJobEntries(req.jobID);
+    const jobEntries = this.#countJobEntries(req.sessionID, req.jobID);
     if (jobEntries >= MAX_PENDING_PER_JOB) {
-      this.#evictOldestForJob(req.jobID);
+      this.#evictOldestForJob(req.sessionID, req.jobID);
     }
 
     this.#pending.set(key, entry);
@@ -281,7 +290,7 @@ export class IdleQueue {
     this.byteSize += byteSize;
   }
 
-  #applyCaps(jobID: string): void {
+  #applyCaps(): void {
     // Global cap
     while (this.#pending.size >= MAX_PENDING_GLOBAL) {
       this.#evictFifo();
@@ -292,10 +301,10 @@ export class IdleQueue {
     }
   }
 
-  #countJobEntries(jobID: string): number {
+  #countJobEntries(sessionID: string, jobID: string): number {
     let count = 0;
     for (const [, entry] of this.#pending) {
-      if (entry.req.jobID === jobID) count += 1;
+      if (entry.req.sessionID === sessionID && entry.req.jobID === jobID) count += 1;
     }
     return count;
   }
@@ -324,10 +333,10 @@ export class IdleQueue {
   /**
    * Evict the oldest entry for a specific job using findIndex + splice.
    */
-  #evictOldestForJob(jobID: string): void {
+  #evictOldestForJob(sessionID: string, jobID: string): void {
     const idx = this.#globalOrder.findIndex((key) => {
       const entry = this.#pending.get(key);
-      return entry !== undefined && entry.req.jobID === jobID;
+      return entry !== undefined && entry.req.sessionID === sessionID && entry.req.jobID === jobID;
     });
     if (idx === -1) return;
 
