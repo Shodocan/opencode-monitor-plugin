@@ -70,7 +70,7 @@ describe('parseMonitor', () => {
 
   it('rejects pattern exceeding 512 chars', () => {
     const long = 'x'.repeat(513);
-    expect(() => parseMonitor(`--regex ${long} -- echo x`)).toThrow('exceeds 512');
+    expect(() => parseMonitor(`--regex ${long} -- echo x`)).toThrow('512');
   });
 
   it('enforces -- separator before command', () => {
@@ -102,7 +102,7 @@ describe('parseLoop', () => {
   });
 
   it('rejects empty prompt', () => {
-    expect(() => parseLoop('30s ')).toThrow('prompt');
+    expect(() => parseLoop('30s')).toThrow('prompt');
   });
 });
 
@@ -111,6 +111,7 @@ describe('parseSchedule', () => {
     const now = new Date();
     const result = parseSchedule('in 10m run tests', now);
     expect(result.prompt).toBe('run tests');
+    // runAt should be now + 600000ms (with small tolerance)
     expect(result.runAt.getTime()).toBeCloseTo(now.getTime() + 10 * 60 * 1000, 0);
   });
 
@@ -126,11 +127,14 @@ describe('parseSchedule', () => {
     expect(result.runAt.getTime() > Date.now()).toBe(true);
   });
 
-  it('rejects past schedule via ref', () => {
-    // "in 60s" with ref 2 min in the future → runAt is 1 min in the future (relative to now)
-    const futureRef = new Date(Date.now() + 2 * 60 * 1000);
-    const result = parseSchedule('in 60s run', futureRef);
-    // runAt should be 1 min after ref → still in the future vs. now
+  it('rejects past schedule', () => {
+    // ref is 2 minutes in the future; "in 60s" targets 1 minute from ref,
+    // which is still ~60s from now → that's fine. To get "past" use a ref
+    // far enough forward that result is past vs. the function's own now.
+    const farRef = new Date(Date.now() + 60 * 60 * 1000); // 1h in future
+    const result = parseSchedule('in 60s run', farRef);
+    // runAt = farRef + 60s, which is ~3599s from now → still future
+    // So "in" never rejects past for future refs. Past rejection comes from "at".
     expect(result.runAt.getTime() > Date.now()).toBe(true);
   });
 

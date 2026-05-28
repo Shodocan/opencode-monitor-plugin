@@ -19,20 +19,19 @@ export function parseSchedule(raw: string, now?: Date): { runAt: Date; prompt: s
 }
 
 function parseScheduleIn(raw: string, ref: Date): { runAt: Date; prompt: string } {
-  const rest = raw.slice(3); // strip "in "
-  const spaceIdx = findDurationSpace(rest);
-  if (spaceIdx === -1) {
-    throw new Error('schedule: missing prompt after duration');
-  }
-
-  const durationRaw = rest.slice(0, spaceIdx);
-  const prompt = rest.slice(spaceIdx + 1).trim();
-
-  // Validate duration unit (no 'd' allowed)
-  const match = durationRaw.match(/^(\d+)(s|m|h)$/);
+  const rest = raw.slice(3);
+  const match = rest.match(/^(\d+)([a-z])\s+(.*)/s);
   if (!match) {
-    throw new Error('schedule: duration must use s, m, or h (not d)');
+    throw new Error('schedule: invalid duration — use <int><s|m|h>');
   }
+
+  const unit = match[2];
+  if (unit === 'd') {
+    throw new Error("schedule: 'd' unit not supported (not d) — use s, m, or h");
+  }
+
+  const durationRaw = match[1] + unit;
+  const prompt = match[3];
 
   const ms = parseDuration(durationRaw);
   const runAt = new Date(ref.getTime() + ms);
@@ -46,17 +45,16 @@ function parseScheduleIn(raw: string, ref: Date): { runAt: Date; prompt: string 
 }
 
 function parseScheduleAt(raw: string, ref: Date): { runAt: Date; prompt: string } {
-  const rest = raw.slice(3); // strip "at "
+  const rest = raw.slice(3);
 
-  // Match ISO datetime: YYYY-MM-DDTHH:MM:SS.mmm or YYYY-MM-DDTHH:MM
-  // Optionally followed by Z or ±HH:MM timezone offset
-  const isoMatch = rest.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)\s+(.*)/s);
-  if (!isoMatch) {
-    throw new Error('schedule: invalid ISO date after "at"');
+  // Match ISO datetime including optional timezone suffix
+  const match = rest.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?(?:Z|[+-]\d{2}:\d{2})?)\s+(.*)/s);
+  if (!match) {
+    throw new Error('schedule: invalid ISO format — use YYYY-MM-DDTHH:MM:SS');
   }
 
-  const dateStr = isoMatch[1];
-  const prompt = isoMatch[2] ?? '';
+  const dateStr = match[1];
+  const prompt = match[2];
 
   const runAt = parseDateString(dateStr);
   const nowMs = ref.getTime();
@@ -71,16 +69,4 @@ function parseScheduleAt(raw: string, ref: Date): { runAt: Date; prompt: string 
   }
 
   return { runAt, prompt };
-}
-
-/**
- * Find the first space after a duration token (digits + single-letter unit).
- */
-function findDurationSpace(s: string): number {
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === ' ' && /[a-z]/i.test(s[i - 1])) {
-      return i;
-    }
-  }
-  return -1;
 }
