@@ -151,6 +151,14 @@ describe('ProcessRunner', () => {
     runner.dispose(id);
   });
 
+  it('waits for stream end before resolving exitPromise for final partial line', async () => {
+    const id = 'partial-exit-order';
+    const { exitPromise } = runner.run(id, "printf 'done'; (sleep 0.2) &");
+    await exitPromise;
+    expect(runner.tail(id, 'stdout')).toContain('done');
+    runner.dispose(id);
+  });
+
   it('avoids synthetic trailing empty events on partial lines', async () => {
     const id = 'no-synthetic';
     const events: OutputEvent[] = [];

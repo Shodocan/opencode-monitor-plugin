@@ -98,9 +98,10 @@ export class ProcessRunner extends EventEmitter {
     });
 
     // Create the exit promise BEFORE attaching any listeners — avoids the
-    // "fast process exits before handler attached" race.
+    // "fast process exits before handler attached" race. Use `close`, not
+    // `exit`, so stdout/stderr have ended and final partial lines are flushed.
     const exitPromise = new Promise<number | null>((resolve) => {
-      child.once('exit', (code) => resolve(code));
+      child.once('close', (code) => resolve(code));
     });
 
     void this.#onSpawn(jobID, child, exitPromise);
