@@ -152,7 +152,10 @@ export class IdleQueue {
   deliver(req: AutoSubmitRequest): void {
     this.enqueue(req);
     const status = this.#sessionStatuses.get(req.sessionID);
-    if (isIdle(status ?? this.status)) {
+    if (isIdle(status)) {
+      this.flush(req.sessionID);
+    } else if (status === undefined && this.#sessionStatuses.has('__default__') && isIdle(this.status)) {
+      // Legacy single-status mode used by focused unit tests.
       this.flush();
     }
   }

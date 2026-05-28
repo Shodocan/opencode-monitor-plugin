@@ -48,6 +48,18 @@ describe('bridge config and bearer token handling', () => {
     await expect(readBridgeConfig(configPath)).rejects.toThrow(/permissions/i);
   });
 
+  it('rejects non-exact config file and parent directory modes', async () => {
+    const configPath = await tempConfigPath();
+    await writeBridgeConfig(configPath, { url: 'http://127.0.0.1:1', token: 'c'.repeat(43) });
+
+    await chmod(configPath, 0o400);
+    await expect(readBridgeConfig(configPath)).rejects.toThrow(/permissions/i);
+
+    await chmod(configPath, 0o600);
+    await chmod(join(configPath, '..'), 0o755);
+    await expect(readBridgeConfig(configPath)).rejects.toThrow(/parent/i);
+  });
+
   it('generates long base64url tokens and rejects unsafe token values', async () => {
     const configPath = await tempConfigPath();
     const server = new BridgeServer({ configPath });
@@ -157,5 +169,32 @@ describe('BridgeServer HTTP API', () => {
     server.setSessionStatus('s2', 'idle');
     server.setSessionStatus('s3', 'idle');
     expect(delivered.map((payload) => payload.params.sessionID)).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('does not flush a busy session when another session is idle', async () => {
+    const delivered: AppendNotification[] = [];
+    const server = new BridgeServer({
+      configPath: await tempConfigPath(),
+      onAppend: (payload) => {
+        delivered.push(payload);
+        return true;
+      },
+    });
+    servers.push(server);
+    const config = await server.start();
+    server.setSessionStatus('s1', 'idle');
+    server.setSessionStatus('s2', 'busy');
+
+    const headers = { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' };
+    await fetch(`${config.url}/notify/append-submit`, {
+      method: 'POST', headers, body: JSON.stringify(req('s2', 'bg_busy')),
+    });
+    await fetch(`${config.url}/notify/append-submit`, {
+      method: 'POST', headers, body: JSON.stringify(req('s1', 'bg_idle')),
+    });
+
+    expect(delivered.map((payload) => payload.params.sessionID)).toEqual(['s1']);
+    server.setSessionStatus('s2', 'idle');
+    expect(delivered.map((payload) => payload.params.sessionID)).toEqual(['s1', 's2']);
   });
 });

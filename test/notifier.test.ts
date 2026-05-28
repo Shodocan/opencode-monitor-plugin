@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BridgeServer, type AppendNotification } from '../src/bridge/server.js';
-import { appendSubmitToSession } from '../src/delivery/notifier.js';
+import { appendSubmitToSession, health } from '../src/delivery/notifier.js';
 
 const servers: BridgeServer[] = [];
 
@@ -43,5 +43,14 @@ describe('appendSubmitToSession notifier', () => {
         kind: 'mon',
       },
     ]);
+  });
+
+  it('can call bridge health operation from config', async () => {
+    const configPath = await tempConfigPath();
+    const server = new BridgeServer({ configPath });
+    servers.push(server);
+    await server.start();
+
+    await expect(health(configPath)).resolves.toEqual({ ok: true });
   });
 });

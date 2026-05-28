@@ -80,9 +80,18 @@ export async function writeBridgeConfig(path: string, config: BridgeConfig): Pro
 
 export async function readBridgeConfig(path?: string): Promise<BridgeConfig> {
   const configPath = resolveConfigPath(path);
+  const parentInfo = await stat(dirname(configPath));
+  const parentMode = parentInfo.mode & 0o777;
+  if (parentMode !== 0o700) {
+    throw new Error('bridge config parent permissions are invalid');
+  }
+  if (typeof process.getuid === 'function' && parentInfo.uid !== process.getuid()) {
+    throw new Error('bridge config parent owner is invalid');
+  }
+
   const info = await stat(configPath);
   const mode = info.mode & 0o777;
-  if ((mode & 0o077) !== 0) {
+  if (mode !== 0o600) {
     throw new Error('bridge config permissions are invalid');
   }
   if (typeof process.getuid === 'function' && info.uid !== process.getuid()) {
