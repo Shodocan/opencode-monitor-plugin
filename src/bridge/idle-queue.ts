@@ -195,7 +195,7 @@ export class IdleQueue {
 
           let ok: boolean;
           try {
-            ok = this.onDelivery(entry.req);
+            ok = this.onDelivery(this.#requestForDelivery(entry));
           } catch {
             ok = false;
           }
@@ -219,7 +219,7 @@ export class IdleQueue {
 
     let ok: boolean;
     try {
-      ok = this.onDelivery(entry.req);
+      ok = this.onDelivery(this.#requestForDelivery(entry));
     } catch {
       ok = false;
     }
@@ -352,6 +352,15 @@ export class IdleQueue {
 
   #measureBytes(req: AutoSubmitRequest): number {
     return new TextEncoder().encode(req.text).length;
+  }
+
+  #requestForDelivery(entry: IdlePendingEntry): AutoSubmitRequest {
+    const count = entry.coalescedTickCount ?? 1;
+    if (!entry.coalesced || count <= 1) return entry.req;
+    return {
+      ...entry.req,
+      text: `${entry.req.text}\n\n[coalesced ${count} loop ticks while session was busy]`,
+    };
   }
 }
 

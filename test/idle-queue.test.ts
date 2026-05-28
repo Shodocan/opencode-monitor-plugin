@@ -216,6 +216,19 @@ describe('IdleQueue /loop coalescing', () => {
     expect(entry.coalescedTickCount).toBe(3);
   });
 
+  it('adds coalesced tick count metadata when delivering loop backlog', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'loop_1', 'loop', 'tick-1'));
+    q.enqueue(req('s1', 'loop_1', 'loop', 'tick-2'));
+    q.enqueue(req('s1', 'loop_1', 'loop', 'tick-3'));
+
+    q.setSessionStatus('idle');
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].text).toContain('tick-3');
+    expect(delivered[0].text).toContain('coalesced 3 loop ticks');
+  });
+
   it('non-loop entries are separate pending records', () => {
     const q = new IdleQueue('busy', deliveryStub);
     q.enqueue(req('s1', 'bg_1', 'bg', 'x'));
