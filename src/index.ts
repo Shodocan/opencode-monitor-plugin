@@ -9,6 +9,7 @@ import { PromptScheduler, type LoopConfig, type ScheduleConfig } from './schedul
 import { formatAutoSubmit, formatCancel, formatDelivery, formatJobs } from './delivery/delivery-formatter.js';
 import { appendSubmitToSession, health as bridgeHealth } from './delivery/notifier.js';
 import type { AutoSubmitRequest, JobKind, OutputStream } from './types.js';
+import { BridgeServer, type AppendNotification } from './bridge/server.js';
 
 type CommandHandler = (raw: string, ctx: PluginContext) => Promise<string>;
 
@@ -43,6 +44,7 @@ export interface MonitorPlugin {
 
 interface OpencodePluginInput {
   directory?: string;
+  serverUrl?: URL;
 }
 
 interface OpencodeConfigLike {
@@ -277,9 +279,50 @@ export function registerCommands(ctx: PluginContext | OpencodePluginInput, deps?
   return plugin;
 }
 
-export const server = async (_input: OpencodePluginInput = {}) => {
-  const plugin = createMonitorPlugin();
+async function publishAppendToTui(input: OpencodePluginInput, payload: AppendNotification): Promise<void> {
+  if (!input.serverUrl) return;
+  const url = new URL('/tui/append-prompt', input.serverUrl);
+  if (input.directory) url.searchParams.set('directory', input.directory);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload.params),
+  });
+  if (!response.ok) throw new Error(`tui append failed with status ${response.status}`);
+}
+
+function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry' | undefined {
+  if (typeof status !== 'object' || status === null) return undefined;
+  const type = (status as { type?: unknown }).type;
+  if (type === 'idle' || type === 'busy' || type === 'retry') return type;
+  return undefined;
+}
+
+export const server = async (input: OpencodePluginInput = {}) => {
+  const bridge = new BridgeServer({
+    onAppend: (payload) => {
+      void publishAppendToTui(input, payload).catch(() => {});
+      return true;
+    },
+  });
+  await bridge.start();
+  const plugin = createMonitorPlugin({
+    health: () => bridgeHealth(),
+    notify: (request) => appendSubmitToSession(request),
+  });
   return {
+    __stop: async () => bridge.stop(),
+    event: async ({ event }: { event: { type?: string; properties?: Record<string, unknown> } }) => {
+      if (event.type === 'session.status') {
+        const sessionID = event.properties?.sessionID;
+        const status = sessionStatusFromEventStatus(event.properties?.status);
+        if (typeof sessionID === 'string') bridge.setSessionStatus(sessionID, status);
+      }
+      if (event.type === 'session.idle') {
+        const sessionID = event.properties?.sessionID;
+        if (typeof sessionID === 'string') bridge.setSessionStatus(sessionID, 'idle');
+      }
+    },
     config: async (config: OpencodeConfigLike) => {
       config.command ??= {};
       for (const [name, description] of Object.entries(COMMAND_DESCRIPTIONS)) {
@@ -292,6 +335,7 @@ export const server = async (_input: OpencodePluginInput = {}) => {
     ) => {
       const handler = plugin.handlers[input.command];
       if (!handler) return;
+      bridge.setSessionStatus(input.sessionID, 'busy');
       const text = await handler(input.arguments, {
         sessionID: input.sessionID,
         invocationOrigin: 'user',

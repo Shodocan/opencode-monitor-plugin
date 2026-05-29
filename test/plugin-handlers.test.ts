@@ -80,6 +80,16 @@ describe('plugin command handlers', () => {
 
     expect(Object.keys(config.command ?? {}).sort()).toEqual(['background', 'cancel', 'jobs', 'loop', 'monitor', 'schedule']);
     expect(config.command?.background.template).toBe('$ARGUMENTS');
+    await hooks.__stop();
+  });
+
+  it('server hook tracks session status events', async () => {
+    const hooks = await server({});
+
+    await expect(hooks.event({
+      event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+    })).resolves.toBeUndefined();
+    await hooks.__stop();
   });
 
   it('rejects missing session ID and non-user origins', async () => {
