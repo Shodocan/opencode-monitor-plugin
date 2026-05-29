@@ -85,8 +85,7 @@ describe('plugin command handlers', () => {
     await hooks.__stop();
   });
 
-  it('server hook tools can start background jobs', async () => {
-    vi.useFakeTimers();
+  it('server hook background tool returns output after the command exits', async () => {
     const hooks = await server({});
     const abort = new AbortController();
 
@@ -104,10 +103,9 @@ describe('plugin command handlers', () => {
       },
     );
 
-    expect(result).toContain('started bg_1');
-    await vi.advanceTimersByTimeAsync(1500);
+    expect(result).toContain('background tool_bg_1 exited with code 0');
+    expect(result).toContain('[stdout] ok');
     await hooks.__stop();
-    vi.useRealTimers();
   });
 
   it('server hook tracks session status events', async () => {
@@ -119,7 +117,7 @@ describe('plugin command handlers', () => {
     await hooks.__stop();
   });
 
-  it('server hook publishes append deliveries through the opencode client', async () => {
+  it('server hook publishes async append deliveries through the opencode client', async () => {
     vi.useFakeTimers();
     const publish = vi.fn(async () => ({ data: true }));
     const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
@@ -127,8 +125,8 @@ describe('plugin command handlers', () => {
     await hooks.event({
       event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
     });
-    await hooks.tool.opencode_monitor_background.execute(
-      { command: 'printf ok' },
+    await hooks.tool.opencode_monitor_schedule.execute(
+      { raw: 'in 1s ok' },
       {
         sessionID: 's1',
         messageID: 'm1',
@@ -141,7 +139,7 @@ describe('plugin command handlers', () => {
       },
     );
 
-    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(2500);
     await vi.waitFor(() => expect(publish).toHaveBeenCalled());
     expect(publish.mock.calls[0][0]).toMatchObject({
       query: { directory: '/tmp/project' },

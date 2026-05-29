@@ -98,6 +98,17 @@ function backgroundText(jobID: string, code: number | null, runner: RunnerLike):
   return [`background ${jobID} exited with code ${code ?? 'null'}`, ...stdout, ...stderr].join('\n');
 }
 
+async function runBackgroundCommandAndReturnOutput(command: string, runner: RunnerLike, jobID: string): Promise<string> {
+  const parsed = parseBackground(command);
+  try {
+    const handle = runner.run(jobID, parsed.command);
+    const code = await handle.exitPromise;
+    return backgroundText(jobID, code, runner);
+  } finally {
+    runner.dispose(jobID);
+  }
+}
+
 export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): MonitorPlugin {
   const registry = deps.registry ?? new JobRegistry('plugin');
   const runner = deps.runner ?? new ProcessRunner();
@@ -346,8 +357,12 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
     health: () => bridgeHealth(),
     notify: (request) => appendSubmitToSession(request),
   });
+  const directRunner = new ProcessRunner();
+  let directJobCounter = 0;
   return {
-    __stop: async () => bridge.stop(),
+    __stop: async () => {
+      await bridge.stop();
+    },
     event: async ({ event }: { event: { type?: string; properties?: Record<string, unknown> } }) => {
       if (event.type === 'session.status') {
         const sessionID = event.properties?.sessionID;
@@ -367,12 +382,13 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
     },
     tool: {
       opencode_monitor_background: tool({
-        description: 'Start a shell command in the background. Returns immediately with the job ID; final output is delivered to the session when idle.',
+        description: 'Run a shell command and return its stdout/stderr after it exits.',
         args: { command: tool.schema.string().describe('Command to run via /bin/sh -c') },
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
-            return await plugin.handlers.background(args.command, toolPluginContext(context.sessionID));
+            const jobID = `tool_bg_${++directJobCounter}`;
+            return await runBackgroundCommandAndReturnOutput(args.command, directRunner, jobID);
           } finally {
             armIdleFallback(bridge, context.sessionID);
           }
