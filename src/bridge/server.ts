@@ -238,6 +238,16 @@ export class BridgeServer {
     this.#idleQueue.setSessionStatus(status, sessionID);
   }
 
+  notify(request: AutoSubmitRequest): void {
+    if (!this.#registeredSessions.has(request.sessionID)) {
+      throw new Error('session is not registered');
+    }
+    this.#idleQueue.deliver(request);
+    if (this.#idleQueue.getSessionStatus(request.sessionID) === 'idle') {
+      this.#idleQueue.flush(request.sessionID);
+    }
+  }
+
   async #handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -278,10 +288,7 @@ export class BridgeServer {
       return;
     }
 
-    this.#idleQueue.deliver(request);
-    if (this.#idleQueue.getSessionStatus(request.sessionID) === 'idle') {
-      this.#idleQueue.flush(request.sessionID);
-    }
+    this.notify(request);
     writeJson(res, 202, { ok: true });
   }
 

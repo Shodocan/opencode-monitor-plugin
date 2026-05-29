@@ -354,8 +354,8 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   });
   await bridge.start();
   const plugin = createMonitorPlugin({
-    health: () => bridgeHealth(),
-    notify: (request) => appendSubmitToSession(request),
+    health: async () => undefined,
+    notify: async (request) => bridge.notify(request),
   });
   const directRunner = new ProcessRunner();
   let directJobCounter = 0;

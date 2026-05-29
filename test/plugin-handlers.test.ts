@@ -150,6 +150,49 @@ describe('plugin command handlers', () => {
     vi.useRealTimers();
   });
 
+  it('routes async deliveries through the owning plugin instance, not the shared bridge config', async () => {
+    vi.useFakeTimers();
+    const publishOne = vi.fn(async () => ({ data: true }));
+    const publishTwo = vi.fn(async () => ({ data: true }));
+    const hooksOne = await server({ client: { tui: { publish: publishOne } }, directory: '/tmp/one' });
+    const hooksTwo = await server({ client: { tui: { publish: publishTwo } }, directory: '/tmp/two' });
+
+    await hooksOne.event({
+      event: { type: 'session.status', properties: { sessionID: 's-one', status: { type: 'idle' } } },
+    });
+    await hooksTwo.event({
+      event: { type: 'session.status', properties: { sessionID: 's-two', status: { type: 'idle' } } },
+    });
+
+    await hooksOne.tool.opencode_monitor_schedule.execute(
+      { raw: 'in 1s routed' },
+      {
+        sessionID: 's-one',
+        messageID: 'm1',
+        agent: 'operator',
+        directory: process.cwd(),
+        worktree: process.cwd(),
+        abort: new AbortController().signal,
+        metadata: vi.fn(),
+        ask: vi.fn(),
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(2500);
+
+    await vi.waitFor(() => expect(publishOne).toHaveBeenCalledTimes(1));
+    expect(publishOne.mock.calls[0][0]).toMatchObject({
+      query: { directory: '/tmp/one' },
+      body: { type: 'tui.prompt.append', properties: { sessionID: 's-one', submit: true } },
+    });
+    expect(publishOne.mock.calls[0][0].body.properties.text).toContain('routed');
+    expect(publishTwo).not.toHaveBeenCalled();
+
+    await hooksOne.__stop();
+    await hooksTwo.__stop();
+    vi.useRealTimers();
+  });
+
   it('rejects missing session ID and non-user origins', async () => {
     const plugin = createMonitorPlugin({ health: async () => undefined });
 
