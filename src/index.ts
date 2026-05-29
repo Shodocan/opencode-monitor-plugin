@@ -1,4 +1,5 @@
 import type { OutputEvent } from './types.js';
+import { tool } from '@opencode-ai/plugin';
 import type { PluginContext } from './plugin-context.js';
 import { requireDirectUserContext } from './plugin-context.js';
 import { parseBackground, parseLoop, parseMonitor, parseSchedule } from './parser/index.js';
@@ -58,6 +59,15 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   schedule: 'Submit a prompt once in the future.',
   jobs: 'List opencode-monitor jobs for this session.',
   cancel: 'Cancel an opencode-monitor job for this session.',
+};
+
+const COMMAND_TEMPLATES: Record<string, string> = {
+  background: 'Use the `opencode_monitor_background` tool with command exactly as written below. Return the tool result.\n\n$ARGUMENTS',
+  monitor: 'Use the `opencode_monitor_monitor` tool. Pass the raw monitor arguments exactly as written below. Return the tool result.\n\n$ARGUMENTS',
+  loop: 'Use the `opencode_monitor_loop` tool. Pass the raw loop arguments exactly as written below. Return the tool result.\n\n$ARGUMENTS',
+  schedule: 'Use the `opencode_monitor_schedule` tool. Pass the raw schedule arguments exactly as written below. Return the tool result.\n\n$ARGUMENTS',
+  jobs: 'Use the `opencode_monitor_jobs` tool and return the tool result.\n\n$ARGUMENTS',
+  cancel: 'Use the `opencode_monitor_cancel` tool with the job ID exactly as written below. Return the tool result.\n\n$ARGUMENTS',
 };
 
 interface JobRuntime {
@@ -298,7 +308,7 @@ function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry
   return undefined;
 }
 
-export const server = async (input: OpencodePluginInput = {}) => {
+export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   const bridge = new BridgeServer({
     onAppend: (payload) => {
       void publishAppendToTui(input, payload).catch(() => {});
@@ -326,31 +336,62 @@ export const server = async (input: OpencodePluginInput = {}) => {
     config: async (config: OpencodeConfigLike) => {
       config.command ??= {};
       for (const [name, description] of Object.entries(COMMAND_DESCRIPTIONS)) {
-        config.command[name] = { template: '$ARGUMENTS', description };
+        config.command[name] = { template: COMMAND_TEMPLATES[name] ?? '$ARGUMENTS', description };
       }
     },
-    'command.execute.before': async (
-      input: { command: string; sessionID: string; arguments: string },
-      output: { parts: unknown[] },
-    ) => {
-      const handler = plugin.handlers[input.command];
-      if (!handler) return;
-      bridge.setSessionStatus(input.sessionID, 'busy');
-      const text = await handler(input.arguments, {
-        sessionID: input.sessionID,
-        invocationOrigin: 'user',
-        registerSlashCommand: () => {},
-      });
-      output.parts = [{
-        id: `opencode-monitor-${Date.now()}`,
-        sessionID: input.sessionID,
-        messageID: '',
-        type: 'text',
-        text,
-        synthetic: true,
-      }];
+    tool: {
+      opencode_monitor_background: tool({
+        description: 'Start a shell command in the background. Returns immediately with the job ID; final output is delivered to the session when idle.',
+        args: { command: tool.schema.string().describe('Command to run via /bin/sh -c') },
+        async execute(args, context) {
+          bridge.setSessionStatus(context.sessionID, 'busy');
+          return plugin.handlers.background(args.command, toolPluginContext(context.sessionID));
+        },
+      }),
+      opencode_monitor_monitor: tool({
+        description: 'Start a monitored shell command. Raw args use /monitor syntax, including --regex and command after --.',
+        args: { raw: tool.schema.string().describe('Raw /monitor arguments') },
+        async execute(args, context) {
+          bridge.setSessionStatus(context.sessionID, 'busy');
+          return plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID));
+        },
+      }),
+      opencode_monitor_loop: tool({
+        description: 'Start a prompt loop. Raw args use /loop syntax: <interval> <prompt>.',
+        args: { raw: tool.schema.string().describe('Raw /loop arguments') },
+        async execute(args, context) {
+          bridge.setSessionStatus(context.sessionID, 'busy');
+          return plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID));
+        },
+      }),
+      opencode_monitor_schedule: tool({
+        description: 'Schedule one prompt. Raw args use /schedule syntax: in <duration> <prompt> or at <iso-date> <prompt>.',
+        args: { raw: tool.schema.string().describe('Raw /schedule arguments') },
+        async execute(args, context) {
+          bridge.setSessionStatus(context.sessionID, 'busy');
+          return plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID));
+        },
+      }),
+      opencode_monitor_jobs: tool({
+        description: 'List opencode-monitor jobs owned by the current session.',
+        args: {},
+        async execute(_args, context) {
+          return plugin.handlers.jobs('', toolPluginContext(context.sessionID));
+        },
+      }),
+      opencode_monitor_cancel: tool({
+        description: 'Cancel an opencode-monitor job owned by the current session.',
+        args: { jobID: tool.schema.string().describe('Job ID to cancel') },
+        async execute(args, context) {
+          return plugin.handlers.cancel(args.jobID, toolPluginContext(context.sessionID));
+        },
+      }),
     },
   };
 };
+
+function toolPluginContext(sessionID: string): PluginContext {
+  return { sessionID, invocationOrigin: 'user', registerSlashCommand: () => {} };
+}
 
 export default server;

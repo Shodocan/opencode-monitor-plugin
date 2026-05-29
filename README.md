@@ -1,6 +1,6 @@
 # opencode Monitor Plugin
 
-Slash-command plugin for opencode automation jobs that wait for the target session to become idle before appending and submitting prompts.
+Slash-command and custom-tool plugin for opencode automation jobs that wait for the target session to become idle before appending and submitting prompts.
 
 ## Commands
 
@@ -10,6 +10,15 @@ Slash-command plugin for opencode automation jobs that wait for the target sessi
 - `/schedule in <duration> <prompt>` or `/schedule at <iso-date> <prompt>`: submit once at a future time.
 - `/jobs`: list jobs for the current session only.
 - `/cancel <jobID>`: cancel a job owned by the current session.
+
+Slash commands are prompt templates that instruct the model to call the matching tool. The AI-callable tool names are:
+
+- `opencode_monitor_background`
+- `opencode_monitor_monitor`
+- `opencode_monitor_loop`
+- `opencode_monitor_schedule`
+- `opencode_monitor_jobs`
+- `opencode_monitor_cancel`
 
 ## Idle/busy delivery model
 

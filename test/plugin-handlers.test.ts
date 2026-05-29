@@ -79,7 +79,31 @@ describe('plugin command handlers', () => {
     await hooks.config(config);
 
     expect(Object.keys(config.command ?? {}).sort()).toEqual(['background', 'cancel', 'jobs', 'loop', 'monitor', 'schedule']);
-    expect(config.command?.background.template).toBe('$ARGUMENTS');
+    expect(config.command?.background.template).toContain('opencode_monitor_background');
+    expect(hooks.tool).toHaveProperty('opencode_monitor_background');
+    expect(hooks.tool).toHaveProperty('opencode_monitor_jobs');
+    await hooks.__stop();
+  });
+
+  it('server hook tools can start background jobs', async () => {
+    const hooks = await server({});
+    const abort = new AbortController();
+
+    const result = await hooks.tool.opencode_monitor_background.execute(
+      { command: 'printf ok' },
+      {
+        sessionID: 's1',
+        messageID: 'm1',
+        agent: 'operator',
+        directory: process.cwd(),
+        worktree: process.cwd(),
+        abort: abort.signal,
+        metadata: vi.fn(),
+        ask: vi.fn(),
+      },
+    );
+
+    expect(result).toContain('started bg_1');
     await hooks.__stop();
   });
 
