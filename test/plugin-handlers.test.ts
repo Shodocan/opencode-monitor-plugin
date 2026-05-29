@@ -119,6 +119,39 @@ describe('plugin command handlers', () => {
     await hooks.__stop();
   });
 
+  it('server hook publishes append deliveries through the opencode client', async () => {
+    vi.useFakeTimers();
+    const publish = vi.fn(async () => ({ data: true }));
+    const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
+
+    await hooks.event({
+      event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+    });
+    await hooks.tool.opencode_monitor_background.execute(
+      { command: 'printf ok' },
+      {
+        sessionID: 's1',
+        messageID: 'm1',
+        agent: 'operator',
+        directory: process.cwd(),
+        worktree: process.cwd(),
+        abort: new AbortController().signal,
+        metadata: vi.fn(),
+        ask: vi.fn(),
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      query: { directory: '/tmp/project' },
+      body: { type: 'tui.prompt.append', properties: { sessionID: 's1', submit: true } },
+    });
+    expect(publish.mock.calls[0][0].body.properties.text).toContain('ok');
+    await hooks.__stop();
+    vi.useRealTimers();
+  });
+
   it('rejects missing session ID and non-user origins', async () => {
     const plugin = createMonitorPlugin({ health: async () => undefined });
 

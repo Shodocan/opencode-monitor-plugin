@@ -44,6 +44,12 @@ export interface MonitorPlugin {
 }
 
 interface OpencodePluginInput {
+  client?: {
+    tui?: {
+      publish?: (options: { body: unknown; query?: { directory?: string } }) => Promise<unknown>;
+      appendPrompt?: (options: { body: unknown; query?: { directory?: string } }) => Promise<unknown>;
+    };
+  };
   directory?: string;
   serverUrl?: URL;
 }
@@ -290,6 +296,18 @@ export function registerCommands(ctx: PluginContext | OpencodePluginInput, deps?
 }
 
 async function publishAppendToTui(input: OpencodePluginInput, payload: AppendNotification): Promise<void> {
+  const query = input.directory ? { directory: input.directory } : undefined;
+  if (input.client?.tui?.publish) {
+    await input.client.tui.publish({
+      query,
+      body: { type: 'tui.prompt.append', properties: payload.params },
+    });
+    return;
+  }
+  if (input.client?.tui?.appendPrompt) {
+    await input.client.tui.appendPrompt({ query, body: payload.params });
+    return;
+  }
   if (!input.serverUrl) return;
   const url = new URL('/tui/append-prompt', input.serverUrl);
   if (input.directory) url.searchParams.set('directory', input.directory);
@@ -317,7 +335,9 @@ function armIdleFallback(bridge: BridgeServer, sessionID: string): void {
 export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   const bridge = new BridgeServer({
     onAppend: (payload) => {
-      void publishAppendToTui(input, payload).catch(() => {});
+      void publishAppendToTui(input, payload).catch((error) => {
+        console.error('opencode-monitor append failed', error instanceof Error ? error.message : String(error));
+      });
       return true;
     },
   });
