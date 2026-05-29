@@ -85,12 +85,13 @@ describe('plugin command handlers', () => {
     await hooks.__stop();
   });
 
-  it('server hook background tool returns output after the command exits', async () => {
-    const hooks = await server({});
+  it('server hook background tool returns immediately and publishes output later', async () => {
+    const publish = vi.fn(async () => ({ data: true }));
+    const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
     const abort = new AbortController();
 
-    const result = await hooks.tool.opencode_monitor_background.execute(
-      { command: 'printf ok' },
+    const resultPromise = hooks.tool.opencode_monitor_background.execute(
+      { command: 'sleep 1 && printf ok' },
       {
         sessionID: 's1',
         messageID: 'm1',
@@ -102,9 +103,14 @@ describe('plugin command handlers', () => {
         ask: vi.fn(),
       },
     );
+    const result = await Promise.race([
+      resultPromise,
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed out waiting for immediate result'), 100)),
+    ]);
 
-    expect(result).toContain('background tool_bg_1 exited with code 0');
-    expect(result).toContain('[stdout] ok');
+    expect(result).toContain('started bg_1');
+    await vi.waitFor(() => expect(publish).toHaveBeenCalled(), { timeout: 3_000 });
+    expect(publish.mock.calls[0][0].body.properties.text).toContain('[stdout] ok');
     await hooks.__stop();
   });
 
