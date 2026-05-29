@@ -308,6 +308,12 @@ function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry
   return undefined;
 }
 
+function armIdleFallback(bridge: BridgeServer, sessionID: string): void {
+  setTimeout(() => {
+    bridge.setSessionStatus(sessionID, 'idle');
+  }, 1500).unref?.();
+}
+
 export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   const bridge = new BridgeServer({
     onAppend: (payload) => {
@@ -345,7 +351,11 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         args: { command: tool.schema.string().describe('Command to run via /bin/sh -c') },
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
-          return plugin.handlers.background(args.command, toolPluginContext(context.sessionID));
+          try {
+            return await plugin.handlers.background(args.command, toolPluginContext(context.sessionID));
+          } finally {
+            armIdleFallback(bridge, context.sessionID);
+          }
         },
       }),
       opencode_monitor_monitor: tool({
@@ -353,7 +363,11 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         args: { raw: tool.schema.string().describe('Raw /monitor arguments') },
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
-          return plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID));
+          try {
+            return await plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID));
+          } finally {
+            armIdleFallback(bridge, context.sessionID);
+          }
         },
       }),
       opencode_monitor_loop: tool({
@@ -361,7 +375,11 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         args: { raw: tool.schema.string().describe('Raw /loop arguments') },
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
-          return plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID));
+          try {
+            return await plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID));
+          } finally {
+            armIdleFallback(bridge, context.sessionID);
+          }
         },
       }),
       opencode_monitor_schedule: tool({
@@ -369,7 +387,11 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         args: { raw: tool.schema.string().describe('Raw /schedule arguments') },
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
-          return plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID));
+          try {
+            return await plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID));
+          } finally {
+            armIdleFallback(bridge, context.sessionID);
+          }
         },
       }),
       opencode_monitor_jobs: tool({

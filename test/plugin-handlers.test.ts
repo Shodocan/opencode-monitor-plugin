@@ -86,6 +86,7 @@ describe('plugin command handlers', () => {
   });
 
   it('server hook tools can start background jobs', async () => {
+    vi.useFakeTimers();
     const hooks = await server({});
     const abort = new AbortController();
 
@@ -104,7 +105,9 @@ describe('plugin command handlers', () => {
     );
 
     expect(result).toContain('started bg_1');
+    await vi.advanceTimersByTimeAsync(1500);
     await hooks.__stop();
+    vi.useRealTimers();
   });
 
   it('server hook tracks session status events', async () => {
