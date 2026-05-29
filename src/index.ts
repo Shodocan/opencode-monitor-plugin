@@ -107,7 +107,9 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   const runtimes = new Map<string, JobRuntime>();
 
   const deliver = async (request: AutoSubmitRequest, preformatted = false): Promise<void> => {
-    const text = preformatted ? request.text : formatAutoSubmit(request);
+    const text = preformatted || request.kind === 'loop' || request.kind === 'sched'
+      ? request.text
+      : formatAutoSubmit(request);
     await notify({ ...request, text });
     registry.updateDeliveryStatus(request.jobID, 'sent');
     if (request.kind === 'sched') {
