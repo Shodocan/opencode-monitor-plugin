@@ -4,7 +4,9 @@ OpenCode plugin for background automation jobs. It provides slash commands, AI-c
 
 ## Prerequisites
 
-This plugin requires **och** (custom opencode build with MCP/TUI integrations). Standard opencode does not support the TUI plugin system or MCP notification channels used by this plugin.
+This plugin requires **och**, a custom opencode build with MCP/TUI integrations. Today, **och is just opencode plus [anomalyco/opencode#30019](https://github.com/anomalyco/opencode/pull/30019)** until that PR is merged upstream. Standard opencode does not yet support the TUI plugin system or MCP notification channels used by this plugin.
+
+If this plugin is useful to you, please help by upvoting/supporting [anomalyco/opencode#30019](https://github.com/anomalyco/opencode/pull/30019) so these hooks can land in upstream opencode.
 
 **Install och (Linux x64):**
 ```bash
