@@ -100,17 +100,18 @@ describe('ProcessRunner', () => {
     runner.dispose(id);
   });
 
-  it('emits seq incrementing per stream', async () => {
+  it('emits globally unique increasing seqs across streams', async () => {
     const id = 'seq_1';
     const events: OutputEvent[] = [];
     runner.on('output', (ev) => {
       if (ev.jobID === id) events.push(ev);
     });
-    const { exitPromise } = runner.run(id, 'echo "seq test"');
+    const { exitPromise } = runner.run(id, 'printf "out1\\nout2\\n"; printf "err1\\nerr2\\n" >&2');
     await exitPromise;
-    const stdoutEvents = events.filter((e) => e.stream === 'stdout' && e.line.length > 0);
-    for (let i = 1; i < stdoutEvents.length; i++) {
-      expect(stdoutEvents[i].seq).toBeGreaterThan(stdoutEvents[i - 1].seq);
+    const nonEmptyEvents = events.filter((e) => e.line.length > 0).sort((a, b) => a.seq - b.seq);
+    expect(new Set(nonEmptyEvents.map((event) => event.seq)).size).toBe(nonEmptyEvents.length);
+    for (let i = 1; i < nonEmptyEvents.length; i++) {
+      expect(nonEmptyEvents[i].seq).toBeGreaterThan(nonEmptyEvents[i - 1].seq);
     }
     runner.dispose(id);
   });

@@ -1,4 +1,4 @@
-# opencode Monitor Plugin Implementation Plan
+# Opencode job management plugin implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -28,9 +28,9 @@
   - Contract: `notifications/opencode/session/status` with `{ sessionID, status: { type: "idle" | "busy" | "retry", ... } }`.
   - Expected: bridge can subscribe and cache status per `sessionID`.
   - If missing: BLOCKED; idle gating cannot be implemented safely.
-- [ ] Verify append notification.
-  - Contract: `notifications/opencode/prompt/append` with `{ text, submit: true, sessionID }`.
-  - Expected: bridge can append and submit only after cached status is `idle`.
+- [ ] Verify visible synthetic prompt notification.
+  - Contract: `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }`.
+  - Expected: bridge can submit a visible synthetic prompt only after cached status is `idle`, without mutating visible user prompt input.
   - If missing: BLOCKED.
 
 ---
@@ -263,7 +263,7 @@ expect(text).not.toContain('\u001b[');
   - bearer token generated with `crypto.randomBytes(32)` or stronger; reject tokens shorter than 43 base64url chars or equivalent entropy
   - compare bearer token with `crypto.timingSafeEqual` after length check; never print token or full bridge config in logs/errors
   - bridge consumes session status notifications using `status.type`
-  - append notification uses `notifications/opencode/prompt/append` with `{ text, submit: true, sessionID }` only after idle.
+  - delivery notification uses `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }` only after idle.
 - [ ] Step 4: Run tests; expected PASS.
 - [ ] Step 5: Commit.
 

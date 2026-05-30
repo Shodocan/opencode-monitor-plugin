@@ -5,24 +5,28 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { IdleQueue, type SessionStatus } from './idle-queue.js';
 import type { AutoSubmitRequest, JobKind } from '../types.js';
+import { monitorDebug } from '../debug-log.js';
 
 export interface BridgeConfig {
   url: string;
   token: string;
 }
 
-export interface AppendNotification {
-  method: 'notifications/opencode/prompt/append';
-  params: { text: string; submit: true; sessionID: string };
+export interface PromptSyntheticNotification {
+  method: 'notifications/opencode/prompt/synthetic';
+  params: { text: string; sessionID: string; visible?: boolean };
+  agent?: string;
   jobID: string;
   kind: JobKind;
 }
+
+export type AppendNotification = PromptSyntheticNotification;
 
 export interface BridgeServerOptions {
   configPath?: string;
   host?: '127.0.0.1' | '::1';
   port?: number;
-  onAppend?: (payload: AppendNotification) => boolean;
+  onAppend?: (payload: PromptSyntheticNotification) => boolean;
 }
 
 const CONFIG_ENV = 'OPENCODE_MONITOR_BRIDGE_CONFIG';
@@ -164,13 +168,15 @@ function parseAutoSubmitRequest(value: unknown): AutoSubmitRequest | undefined {
   };
 }
 
-function toAppendNotification(req: AutoSubmitRequest): AppendNotification {
-  return {
-    method: 'notifications/opencode/prompt/append',
-    params: { text: req.text, submit: true, sessionID: req.sessionID },
+function toSyntheticNotification(req: AutoSubmitRequest): PromptSyntheticNotification {
+  const notification: PromptSyntheticNotification = {
+    method: 'notifications/opencode/prompt/synthetic',
+    params: { text: req.text, sessionID: req.sessionID, visible: true },
     jobID: req.jobID,
     kind: req.kind,
   };
+  if (req.agent) notification.agent = req.agent;
+  return notification;
 }
 
 export class BridgeServer {
@@ -183,7 +189,7 @@ export class BridgeServer {
   constructor(options: BridgeServerOptions = {}) {
     this.#options = options;
     const onAppend = options.onAppend ?? (() => true);
-    this.#idleQueue = new IdleQueue(undefined, (req) => onAppend(toAppendNotification(req)));
+    this.#idleQueue = new IdleQueue(undefined, (req) => onAppend(toSyntheticNotification(req)));
   }
 
   async start(): Promise<BridgeConfig> {
@@ -212,6 +218,7 @@ export class BridgeServer {
     const hostname = host === '::1' ? '[::1]' : host;
     this.#server = server;
     this.#config = { url: `http://${hostname}:${address.port}`, token };
+    monitorDebug('bridge.start.listen', { url: this.#config.url, configPath: resolveConfigPath(this.#options.configPath) });
     try {
       await writeBridgeConfig(resolveConfigPath(this.#options.configPath), this.#config);
     } catch (error) {
@@ -234,17 +241,21 @@ export class BridgeServer {
   }
 
   setSessionStatus(sessionID: string, status: SessionStatus | undefined): void {
+    monitorDebug('bridge.session.status', { sessionID, status });
     this.#registeredSessions.add(sessionID);
     this.#idleQueue.setSessionStatus(status, sessionID);
   }
 
   notify(request: AutoSubmitRequest): void {
+    monitorDebug('bridge.notify.start', { sessionID: request.sessionID, jobID: request.jobID, kind: request.kind, currentStatus: this.#idleQueue.getSessionStatus(request.sessionID), registered: this.#registeredSessions.has(request.sessionID) });
     if (!this.#registeredSessions.has(request.sessionID)) {
       throw new Error('session is not registered');
     }
     this.#idleQueue.deliver(request);
+    monitorDebug('bridge.notify.queued', { sessionID: request.sessionID, jobID: request.jobID, kind: request.kind, pendingCount: this.#idleQueue.pendingCount, currentStatus: this.#idleQueue.getSessionStatus(request.sessionID) });
     if (this.#idleQueue.getSessionStatus(request.sessionID) === 'idle') {
       this.#idleQueue.flush(request.sessionID);
+      monitorDebug('bridge.notify.flush.requested', { sessionID: request.sessionID, jobID: request.jobID, pendingCount: this.#idleQueue.pendingCount });
     }
   }
 

@@ -10,7 +10,9 @@ import { PromptScheduler, type LoopConfig, type ScheduleConfig } from './schedul
 import { formatAutoSubmit, formatCancel, formatDelivery, formatJobs } from './delivery/delivery-formatter.js';
 import { appendSubmitToSession, health as bridgeHealth } from './delivery/notifier.js';
 import type { AutoSubmitRequest, JobKind, OutputStream } from './types.js';
-import { BridgeServer, type AppendNotification } from './bridge/server.js';
+import { BridgeServer, type PromptSyntheticNotification } from './bridge/server.js';
+import { type MonitorIndicatorSnapshot, writeMonitorStatus } from './status-store.js';
+import { monitorDebug } from './debug-log.js';
 
 type CommandHandler = (raw: string, ctx: PluginContext) => Promise<string>;
 
@@ -36,6 +38,7 @@ export interface MonitorPluginDependencies {
   notify?: (request: AutoSubmitRequest) => Promise<void>;
   health?: () => Promise<unknown>;
   now?: () => Date;
+  onStatusChange?: (snapshot: MonitorIndicatorSnapshot) => void;
 }
 
 export interface MonitorPlugin {
@@ -45,18 +48,34 @@ export interface MonitorPlugin {
 
 interface OpencodePluginInput {
   client?: {
-    tui?: {
-      publish?: (options: { body: unknown; query?: { directory?: string } }) => Promise<unknown>;
-      appendPrompt?: (options: { body: unknown; query?: { directory?: string } }) => Promise<unknown>;
+    session?: {
+      promptAsync?: (options: {
+        path: { id: string };
+        query?: { directory?: string };
+        body: {
+          agent?: string;
+          parts: Array<{
+            type: 'text';
+            text: string;
+            synthetic: true;
+            metadata: Record<string, unknown>;
+          }>;
+        };
+      }) => Promise<unknown>;
     };
   };
   directory?: string;
+  worktree?: string;
   serverUrl?: URL;
 }
 
 interface OpencodeConfigLike {
   command?: Record<string, { template: string; description?: string }>;
 }
+
+type SessionPromptAsyncBody = NonNullable<NonNullable<OpencodePluginInput['client']>['session']> extends { promptAsync?: (options: infer Options) => Promise<unknown> }
+  ? Options
+  : never;
 
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
   background: 'Run a shell command in the background and report when it exits.',
@@ -106,15 +125,38 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   const now = deps.now ?? (() => new Date());
   const runtimes = new Map<string, JobRuntime>();
 
+  const emitStatus = () => {
+    const timestamp = Date.now();
+    const snapshot: MonitorIndicatorSnapshot = {
+      version: 1,
+      updatedAt: timestamp,
+      jobs: registry.list()
+        .filter((job) => runtimes.has(job.jobID))
+        .map((job) => ({
+          jobID: job.jobID,
+          kind: job.kind,
+          sessionID: runtimes.get(job.jobID)!.sessionID,
+          status: job.status,
+          startedAt: timestamp,
+          updatedAt: timestamp,
+        })),
+    };
+    monitorDebug('plugin.status.emit', { jobs: snapshot.jobs.map((job) => ({ jobID: job.jobID, kind: job.kind, sessionID: job.sessionID, status: job.status })) });
+    deps.onStatusChange?.(snapshot);
+  };
+
   const deliver = async (request: AutoSubmitRequest, preformatted = false): Promise<void> => {
     const text = preformatted || request.kind === 'loop' || request.kind === 'sched'
       ? request.text
       : formatAutoSubmit(request);
+    monitorDebug('plugin.deliver.start', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID, textPreview: text.slice(0, 120) });
     await notify({ ...request, text });
+    monitorDebug('plugin.deliver.ok', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID });
     registry.updateDeliveryStatus(request.jobID, 'sent');
     if (request.kind === 'sched') {
       registry.complete(request.jobID);
       runtimes.delete(request.jobID);
+      emitStatus();
     }
   };
 
@@ -127,11 +169,16 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   };
 
   const registerRuntime = (jobID: string, sessionID: string, kind: JobKind, dispose?: JobRuntime['dispose']) => {
+    monitorDebug('plugin.job.register', { jobID, kind, sessionID });
     runtimes.set(jobID, { sessionID, kind, dispose });
+    emitStatus();
   };
 
   const failJob = (jobID: string, error: unknown) => {
+    monitorDebug('plugin.job.fail', { jobID, error: error instanceof Error ? error.message : String(error) });
     registry.fail(jobID, 'bridge_failed');
+    runtimes.delete(jobID);
+    emitStatus();
     // Keep errors out of visible prompts; job state exposes failure.
     void error;
   };
@@ -139,7 +186,9 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   const handlers: Record<string, CommandHandler> = {
     background: async (raw, ctx) => {
       const sessionID = requireDirectUserContext(ctx);
+      const agent = ctx.agent;
       const parsed = parseBackground(raw);
+      monitorDebug('plugin.background.start', { sessionID, command: parsed.command });
       await ensureBridgeAvailable();
       const jobID = registry.register('bg');
       registerRuntime(jobID, sessionID, 'bg', () => runner.cancel(jobID));
@@ -147,24 +196,28 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       try {
         const handle = runner.run(jobID, parsed.command);
         void handle.exitPromise.then(async (code) => {
+          monitorDebug('plugin.background.runner.exit', { jobID, sessionID, code });
           try {
             const formatted = formatDelivery(backgroundText(jobID, code, runner)).text;
-            await deliver({ sessionID, jobID, kind: 'bg', text: formatted, submit: true }, true);
+            await deliver({ sessionID, agent, jobID, kind: 'bg', text: formatted, submit: true }, true);
             registry.complete(jobID);
           } catch (error) {
             failJob(jobID, error);
           } finally {
             runner.dispose(jobID);
             runtimes.delete(jobID);
+            emitStatus();
           }
         }).catch((error) => {
           failJob(jobID, error);
           runner.dispose(jobID);
           runtimes.delete(jobID);
+          emitStatus();
         });
       } catch (error) {
         runtimes.delete(jobID);
         registry.fail(jobID);
+        emitStatus();
         throw error;
       }
 
@@ -173,7 +226,19 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
 
     monitor: async (raw, ctx) => {
       const sessionID = requireDirectUserContext(ctx);
+      const agent = ctx.agent;
       const parsed = parseMonitor(raw);
+      monitorDebug('plugin.monitor.start', {
+        sessionID,
+        raw,
+        regex: parsed.regex.source,
+        flags: parsed.regex.flags,
+        before: parsed.before,
+        after: parsed.after,
+        debounceMs: parsed.debounceMs,
+        command: parsed.command,
+        runnerOn: Boolean(runner.on),
+      });
       await ensureBridgeAvailable();
       const jobID = registry.register('mon');
       let engine: MonitorEngine | undefined;
@@ -184,6 +249,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         if (outputHandler && runner.off) runner.off('output', outputHandler);
         runner.dispose(jobID);
         runtimes.delete(jobID);
+        emitStatus();
       };
       registerRuntime(jobID, sessionID, 'mon', async () => {
         await runner.cancel(jobID);
@@ -198,15 +264,21 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           after: parsed.after,
           debounceMs: parsed.debounceMs,
           onWindow: (window) => {
+            monitorDebug('plugin.monitor.window', { jobID, sessionID, matchSeqs: window.matchSeqs, eventSeqs: window.events.map((event) => event.seq) });
             const formatted = formatDelivery(windowToText(window)).text;
-            void deliver({ sessionID, jobID, kind: 'mon', text: formatted, submit: true }, true)
+            void deliver({ sessionID, agent, jobID, kind: 'mon', text: formatted, submit: true }, true)
               .catch((error) => failJob(jobID, error));
           },
         });
-        outputHandler = (event: OutputEvent) => engine?.ingest(event);
+        outputHandler = (event: OutputEvent) => {
+          if (event.jobID === jobID) monitorDebug('plugin.monitor.output', { jobID, seq: event.seq, stream: event.stream, line: event.line });
+          engine?.ingest(event);
+        };
         runner.on?.('output', outputHandler);
         const handle = runner.run(jobID, parsed.command);
-        void handle.exitPromise.then(() => {
+        monitorDebug('plugin.monitor.runner.started', { jobID, sessionID });
+        void handle.exitPromise.then((code) => {
+          monitorDebug('plugin.monitor.runner.exit', { jobID, sessionID, code });
           engine?.flush();
           registry.complete(jobID);
           cleanup();
@@ -217,6 +289,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       } catch (error) {
         cleanup();
         registry.fail(jobID);
+        emitStatus();
         throw error;
       }
 
@@ -225,15 +298,17 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
 
     loop: async (raw, ctx) => {
       const sessionID = requireDirectUserContext(ctx);
+      const agent = ctx.agent;
       const parsed = parseLoop(raw);
       await ensureBridgeAvailable();
       const jobID = registry.register('loop');
       registerRuntime(jobID, sessionID, 'loop', () => { scheduler.cancel(jobID); });
       try {
-        scheduler.scheduleLoop({ jobID, sessionID, intervalMs: parsed.intervalMs, prompt: parsed.prompt });
+        scheduler.scheduleLoop({ jobID, sessionID, agent, intervalMs: parsed.intervalMs, prompt: parsed.prompt });
       } catch (error) {
         runtimes.delete(jobID);
         registry.fail(jobID);
+        emitStatus();
         throw error;
       }
       return `started ${jobID}`;
@@ -241,15 +316,17 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
 
     schedule: async (raw, ctx) => {
       const sessionID = requireDirectUserContext(ctx);
+      const agent = ctx.agent;
       const parsed = parseSchedule(raw, now());
       await ensureBridgeAvailable();
       const jobID = registry.register('sched');
       registerRuntime(jobID, sessionID, 'sched', () => { scheduler.cancel(jobID); });
       try {
-        scheduler.scheduleOnce({ jobID, sessionID, runAt: parsed.runAt, prompt: parsed.prompt });
+        scheduler.scheduleOnce({ jobID, sessionID, agent, runAt: parsed.runAt, prompt: parsed.prompt });
       } catch (error) {
         runtimes.delete(jobID);
         registry.fail(jobID);
+        emitStatus();
         throw error;
       }
       return `scheduled ${jobID}`;
@@ -274,6 +351,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       await runtime.dispose?.();
       registry.cancel(jobID);
       runtimes.delete(jobID);
+      emitStatus();
       return formatCancel(jobID, status.kind).text;
     },
   };
@@ -297,28 +375,50 @@ export function registerCommands(ctx: PluginContext | OpencodePluginInput, deps?
   return plugin;
 }
 
-async function publishAppendToTui(input: OpencodePluginInput, payload: AppendNotification): Promise<void> {
+async function submitVisibleSyntheticPrompt(input: OpencodePluginInput, payload: PromptSyntheticNotification): Promise<void> {
   const query = input.directory ? { directory: input.directory } : undefined;
-  if (input.client?.tui?.publish) {
-    await input.client.tui.publish({
-      query,
-      body: { type: 'tui.prompt.append', properties: payload.params },
-    });
+  const options: SessionPromptAsyncBody = {
+    path: { id: payload.params.sessionID },
+    query,
+    body: {
+      ...(payload.agent ? { agent: payload.agent } : {}),
+      parts: [{
+        type: 'text',
+        text: payload.params.text,
+        synthetic: true,
+        metadata: {
+          opencodeMcpVisible: true,
+          opencodeMonitorJobID: payload.jobID,
+          opencodeMonitorKind: payload.kind,
+        },
+      }],
+    },
+  };
+
+  monitorDebug('plugin.session.promptAsync.start', {
+    sessionID: payload.params.sessionID,
+    jobID: payload.jobID,
+    kind: payload.kind,
+    visible: true,
+    hasClientPromptAsync: Boolean(input.client?.session?.promptAsync),
+    hasServerUrl: Boolean(input.serverUrl),
+  });
+  if (input.client?.session?.promptAsync) {
+    await input.client.session.promptAsync(options);
+    monitorDebug('plugin.session.promptAsync.ok', { jobID: payload.jobID, path: 'client.session.promptAsync', visible: true });
     return;
   }
-  if (input.client?.tui?.appendPrompt) {
-    await input.client.tui.appendPrompt({ query, body: payload.params });
-    return;
-  }
-  if (!input.serverUrl) return;
-  const url = new URL('/tui/append-prompt', input.serverUrl);
+
+  if (!input.serverUrl) throw new Error('opencode client session.promptAsync is unavailable');
+  const url = new URL(`/session/${encodeURIComponent(payload.params.sessionID)}/prompt_async`, input.serverUrl);
   if (input.directory) url.searchParams.set('directory', input.directory);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload.params),
+    body: JSON.stringify(options.body),
   });
-  if (!response.ok) throw new Error(`tui append failed with status ${response.status}`);
+  if (!response.ok) throw new Error(`session prompt_async failed with status ${response.status}`);
+  monitorDebug('plugin.session.promptAsync.ok', { jobID: payload.jobID, path: `/session/:id/prompt_async:${response.status}`, visible: true });
 }
 
 function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry' | undefined {
@@ -330,24 +430,38 @@ function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry
 
 function armIdleFallback(bridge: BridgeServer, sessionID: string): void {
   setTimeout(() => {
+    monitorDebug('server.idleFallback.fire', { sessionID });
     bridge.setSessionStatus(sessionID, 'idle');
   }, 1500).unref?.();
 }
 
 export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
+  const statusScope = input.worktree || input.directory || process.cwd();
+  monitorDebug('server.start', { statusScope, directory: input.directory, worktree: input.worktree, hasClientPromptAsync: Boolean(input.client?.session?.promptAsync), hasServerUrl: Boolean(input.serverUrl) });
+  const publishStatus = (snapshot: MonitorIndicatorSnapshot) => {
+    monitorDebug('server.status.write.request', { statusScope, jobs: snapshot.jobs.map((job) => ({ jobID: job.jobID, kind: job.kind, sessionID: job.sessionID, status: job.status })) });
+    void writeMonitorStatus(statusScope, snapshot).catch((error) => {
+      console.error('opencode-monitor status write failed', error instanceof Error ? error.message : String(error));
+    });
+  };
   const bridge = new BridgeServer({
     onAppend: (payload) => {
-      void publishAppendToTui(input, payload).catch((error) => {
-        console.error('opencode-monitor append failed', error instanceof Error ? error.message : String(error));
+      monitorDebug('server.bridge.onAppend', { jobID: payload.jobID, kind: payload.kind, sessionID: payload.params.sessionID, method: payload.method });
+      void submitVisibleSyntheticPrompt(input, payload).catch((error) => {
+        monitorDebug('server.bridge.onAppend.error', { jobID: payload.jobID, error: error instanceof Error ? error.message : String(error) });
+        console.error('opencode-monitor prompt delivery failed', error instanceof Error ? error.message : String(error));
       });
       return true;
     },
   });
   await bridge.start();
+  monitorDebug('server.bridge.started', {});
   const plugin = createMonitorPlugin({
     health: async () => undefined,
     notify: async (request) => bridge.notify(request),
+    onStatusChange: publishStatus,
   });
+  publishStatus({ version: 1, updatedAt: Date.now(), jobs: [] });
   return {
     __stop: async () => {
       await bridge.stop();
@@ -356,11 +470,17 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
       if (event.type === 'session.status') {
         const sessionID = event.properties?.sessionID;
         const status = sessionStatusFromEventStatus(event.properties?.status);
-        if (typeof sessionID === 'string') bridge.setSessionStatus(sessionID, status);
+        if (typeof sessionID === 'string') {
+          monitorDebug('server.event.session.status', { sessionID, status });
+          bridge.setSessionStatus(sessionID, status);
+        }
       }
       if (event.type === 'session.idle') {
         const sessionID = event.properties?.sessionID;
-        if (typeof sessionID === 'string') bridge.setSessionStatus(sessionID, 'idle');
+        if (typeof sessionID === 'string') {
+          monitorDebug('server.event.session.idle', { sessionID });
+          bridge.setSessionStatus(sessionID, 'idle');
+        }
       }
     },
     config: async (config: OpencodeConfigLike) => {
@@ -374,9 +494,10 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Start a shell command in the background. Returns immediately with the job ID; final output is delivered to the session when idle.',
         args: { command: tool.schema.string().describe('Command to run via /bin/sh -c') },
         async execute(args, context) {
+          monitorDebug('tool.background.execute', { sessionID: context.sessionID, command: args.command });
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
-            return await plugin.handlers.background(args.command, toolPluginContext(context.sessionID));
+            return await plugin.handlers.background(args.command, toolPluginContext(context.sessionID, context.agent));
           } finally {
             armIdleFallback(bridge, context.sessionID);
           }
@@ -386,9 +507,10 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Start a monitored shell command. Raw args use /monitor syntax, including --regex and command after --.',
         args: { raw: tool.schema.string().describe('Raw /monitor arguments') },
         async execute(args, context) {
+          monitorDebug('tool.monitor.execute', { sessionID: context.sessionID, raw: args.raw });
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
-            return await plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID));
+            return await plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
             armIdleFallback(bridge, context.sessionID);
           }
@@ -400,7 +522,7 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
-            return await plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID));
+            return await plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
             armIdleFallback(bridge, context.sessionID);
           }
@@ -412,7 +534,7 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         async execute(args, context) {
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
-            return await plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID));
+            return await plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
             armIdleFallback(bridge, context.sessionID);
           }
@@ -422,22 +544,22 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'List opencode-monitor jobs owned by the current session.',
         args: {},
         async execute(_args, context) {
-          return plugin.handlers.jobs('', toolPluginContext(context.sessionID));
+          return plugin.handlers.jobs('', toolPluginContext(context.sessionID, context.agent));
         },
       }),
       opencode_monitor_cancel: tool({
         description: 'Cancel an opencode-monitor job owned by the current session.',
         args: { jobID: tool.schema.string().describe('Job ID to cancel') },
         async execute(args, context) {
-          return plugin.handlers.cancel(args.jobID, toolPluginContext(context.sessionID));
+          return plugin.handlers.cancel(args.jobID, toolPluginContext(context.sessionID, context.agent));
         },
       }),
     },
   };
 };
 
-function toolPluginContext(sessionID: string): PluginContext {
-  return { sessionID, invocationOrigin: 'user', registerSlashCommand: () => {} };
+function toolPluginContext(sessionID: string, agent?: string): PluginContext {
+  return { sessionID, agent, invocationOrigin: 'user', registerSlashCommand: () => {} };
 }
 
 export default server;

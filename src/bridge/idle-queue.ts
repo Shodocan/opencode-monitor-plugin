@@ -4,6 +4,7 @@ import {
   MAX_PENDING_GLOBAL,
   MAX_QUEUE_BYTES_TOTAL,
 } from '../limits.js';
+import { monitorDebug } from '../debug-log.js';
 
 // ----------------------------------------------------------------
 // Session status type
@@ -136,6 +137,7 @@ export class IdleQueue {
     const sid = sessionID ?? '__default__';
     if (status === undefined) this.#sessionStatuses.delete(sid);
     else this.#sessionStatuses.set(sid, status);
+    monitorDebug('idleQueue.status.set', { sessionID: sid, status, pendingCount: this.pendingCount });
     if (isIdle(status) && this.#pending.size > 0) {
       this.flush(sessionID);
     }
@@ -151,6 +153,7 @@ export class IdleQueue {
    * immediately.
    */
   deliver(req: AutoSubmitRequest): void {
+    monitorDebug('idleQueue.deliver', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, status: this.#sessionStatuses.get(req.sessionID), pendingCount: this.pendingCount });
     this.enqueue(req);
     const status = this.#sessionStatuses.get(req.sessionID);
     if (isIdle(status)) {
@@ -167,6 +170,7 @@ export class IdleQueue {
 
   flush(sessionID?: string): void {
     if (this.#flushing) return;
+    monitorDebug('idleQueue.flush.start', { sessionID, pendingCount: this.pendingCount });
     this.#flushing = true;
 
     try {
@@ -195,6 +199,7 @@ export class IdleQueue {
 
           let ok: boolean;
           try {
+            monitorDebug('idleQueue.flush.deliver', { sessionID, jobID: entry.req.jobID, kind: entry.req.kind });
             ok = this.onDelivery(this.#requestForDelivery(entry));
           } catch {
             ok = false;
@@ -206,6 +211,7 @@ export class IdleQueue {
         }
       }
     } finally {
+      monitorDebug('idleQueue.flush.done', { sessionID, pendingCount: this.pendingCount });
       this.#flushing = false;
     }
   }
@@ -219,6 +225,7 @@ export class IdleQueue {
 
     let ok: boolean;
     try {
+      monitorDebug('idleQueue.shift.deliver', { sessionID: entry.req.sessionID, jobID: entry.req.jobID, kind: entry.req.kind });
       ok = this.onDelivery(this.#requestForDelivery(entry));
     } catch {
       ok = false;
@@ -237,6 +244,7 @@ export class IdleQueue {
     } else {
       this.#enqueueStandard(req, byteSize);
     }
+    monitorDebug('idleQueue.enqueue', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, pendingCount: this.pendingCount, dropped: this.dropped, byteSize: this.byteSize });
   }
 
   #coalescedKey(req: AutoSubmitRequest): string {

@@ -148,7 +148,71 @@ Notes:
 - opencode only pushes changes; it does not currently provide an MCP request for an initial status snapshot.
 - If your MCP server connects after a session is already busy, the cache is unknown until the next status change. Treat unknown as conservative/not-ready unless your tool has another source of truth.
 
+## Agent state notification from opencode to MCP servers
+
+opencode sends the current visible TUI agent state to connected MCP servers when the selected agent, selected model, or model variant changes.
+
+Method:
+
+```text
+notifications/opencode/agent/state
+```
+
+Params:
+
+```ts
+{
+  agent: string
+  model?: {
+    providerID: string
+    modelID: string
+  }
+  variant?: string
+}
+```
+
+Example MCP handler:
+
+```ts
+import { NotificationSchema } from "@modelcontextprotocol/sdk/types.js"
+import { z } from "zod"
+
+const agentState = {
+  agent: undefined as string | undefined,
+  model: undefined as { providerID: string; modelID: string } | undefined,
+  variant: undefined as string | undefined,
+}
+
+const AgentStateNotification = NotificationSchema.extend({
+  method: z.literal("notifications/opencode/agent/state"),
+  params: z.object({
+    agent: z.string(),
+    model: z
+      .object({
+        providerID: z.string(),
+        modelID: z.string(),
+      })
+      .optional(),
+    variant: z.string().optional(),
+  }),
+})
+
+server.server.setNotificationHandler(AgentStateNotification, (notification) => {
+  agentState.agent = notification.params.agent
+  agentState.model = notification.params.model
+  agentState.variant = notification.params.variant
+})
+```
+
+Notes:
+
+- This is TUI-local state, not a persisted session setting.
+- Treat missing `model` or `variant` as unknown/not selected.
+- opencode pushes changes; MCP servers should cache the latest value.
+
 ### Append visible prompt text
+
+Use this only for deliberate visible prompt editing. Background/monitor/loop/schedule auto-delivery must use synthetic prompts through the hidden transport instead, because visible append mutates the user's prompt input.
 
 Method:
 
@@ -184,7 +248,9 @@ Behavior:
 - If `submit: true`, opencode submits after inserting the text.
 - If `sessionID` is provided, opencode only applies the append when the visible prompt belongs to that session.
 
-### Send hidden synthetic prompt
+### Send synthetic prompt through hidden transport
+
+Integrations should use this method for all automated prompt delivery. It always uses the hidden transport path and never writes into the editable prompt input the user is typing in.
 
 Method:
 
@@ -198,6 +264,7 @@ Params:
 {
   text: string
   sessionID: string
+  visible?: boolean
 }
 ```
 
@@ -207,17 +274,21 @@ Example:
 await server.server.notification({
   method: "notifications/opencode/prompt/synthetic",
   params: {
-    text: "Run this hidden instruction",
+    text: "Run this integration instruction",
     sessionID: "ses_...",
+    visible: true,
   },
 })
 ```
 
 Behavior:
 
-- Queues a hidden synthetic user prompt for `sessionID`.
-- Does not type into the visible prompt input.
+- Queues a synthetic user prompt for `sessionID` through the hidden prompt queue.
+- Never types into or mutates the visible prompt input.
+- If `visible` is omitted or `true`, the whole `text` is shown in the conversation in muted text with a header in the form `◇ MCP · <server-name>`.
+- If `visible: false`, the message is sent to the model but hidden from the user transcript.
 - Requires a valid opencode session ID.
+- The header caller name is injected by opencode from the connected MCP server name; MCP clients do not provide or spoof it.
 
 ### Execute TUI command
 
@@ -365,16 +436,17 @@ server.registerTool(
 server.registerTool(
   "synthetic_prompt",
   {
-    description: "Send a hidden synthetic prompt to an opencode session",
+    description: "Send a synthetic prompt to an opencode session through the hidden transport",
     inputSchema: {
       text: z.string(),
       sessionID: z.string(),
+      visible: z.boolean().optional(),
     },
   },
-  async ({ text, sessionID }) => {
+  async ({ text, sessionID, visible }) => {
     await server.server.notification({
       method: "notifications/opencode/prompt/synthetic",
-      params: { text, sessionID },
+      params: { text, sessionID, visible },
     })
 
     return {
@@ -457,9 +529,10 @@ await server.connect(transport)
 3. Call `show_toast`; expect a visible TUI toast.
 4. Call `append_prompt` with `submit: false`; expect text inserted in the visible prompt.
 5. Call `append_prompt` with `submit: true`; expect text inserted and submitted.
-6. Call `synthetic_prompt` with a valid `sessionID`; expect a hidden synthetic prompt to be queued for that session.
-7. Call `execute_command` with `prompt.clear`; expect the prompt to clear.
-8. Call `select_session` with a valid `sessionID`; expect the TUI to navigate to that session.
+6. Call `synthetic_prompt` with a valid `sessionID`; expect it to use the hidden transport and show muted full text with `◇ MCP · <server-name>` by default.
+7. Call `synthetic_prompt` with `visible: false`; expect it to use the hidden transport and stay hidden from the transcript.
+8. Call `execute_command` with `prompt.clear`; expect the prompt to clear.
+9. Call `select_session` with a valid `sessionID`; expect the TUI to navigate to that session.
 
 ## Notes
 

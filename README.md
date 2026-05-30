@@ -1,6 +1,6 @@
-# opencode Monitor Plugin
+# Opencode job management plugin
 
-Slash-command and custom-tool plugin for opencode automation jobs that wait for the target session to become idle before appending and submitting prompts.
+Slash-command and custom-tool plugin for opencode automation jobs that wait for the target session to become idle before submitting visible synthetic prompts through the hidden transport.
 
 ## Commands
 
@@ -27,7 +27,7 @@ The plugin sends delivery requests to a local bridge. The bridge tracks opencode
 - `idle`: queued deliveries for that session may flush.
 - `busy`, `retry`, or unknown: deliveries stay queued.
 
-The bridge appends through `notifications/opencode/prompt/append` with `{ text, submit: true, sessionID }`. It rechecks session status before each queued append. `/loop` uses latest-only coalescing and adds coalesced tick metadata; `/background`, `/monitor`, and `/schedule` retain full payloads subject to caps.
+The bridge delivers through `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }`. It rechecks session status before each queued delivery. `/loop` uses latest-only coalescing and adds coalesced tick metadata; `/background`, `/monitor`, and `/schedule` retain full payloads subject to caps. The plugin must not use visible prompt append for queued output, because append mutates the user's prompt input.
 
 ## Bridge config
 
@@ -47,7 +47,7 @@ Security constraints:
 
 ## Installation/configuration
 
-Build the package and register the plugin entry from `dist/index.js` in opencode config:
+Build the package and register the server plugin entry from `dist/index.js` in opencode config:
 
 ```bash
 npm install
@@ -64,6 +64,16 @@ Example opencode config fragment:
 ```
 
 Restart opencode after changing plugin/config files; config is loaded at startup.
+
+Register the TUI plugin entry from `dist/tui.js` in `tui.json`:
+
+```json
+{
+  "plugin": ["./dist/tui.js"]
+}
+```
+
+The TUI plugin adds a visual running-job indicator in the prompt area plus a collapsible sidebar detail view.
 
 ## Limits and safety notes
 

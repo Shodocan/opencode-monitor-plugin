@@ -13,6 +13,7 @@ export interface OutputEvent {
 
 export interface AutoSubmitRequest {
   sessionID: string;
+  agent?: string;
   jobID: string;
   kind: JobKind;
   text: string;

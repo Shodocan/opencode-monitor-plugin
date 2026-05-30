@@ -18,7 +18,7 @@ async function tempConfigPath(): Promise<string> {
 }
 
 describe('appendSubmitToSession notifier', () => {
-  it('reads config path from env and posts canonical append-submit payload with bearer auth', async () => {
+  it('reads config path from env and posts canonical visible synthetic payload with bearer auth', async () => {
     const configPath = await tempConfigPath();
     vi.stubEnv('OPENCODE_MONITOR_BRIDGE_CONFIG', configPath);
     const delivered: AppendNotification[] = [];
@@ -37,8 +37,8 @@ describe('appendSubmitToSession notifier', () => {
 
     expect(delivered).toEqual([
       {
-        method: 'notifications/opencode/prompt/append',
-        params: { text: 'go', submit: true, sessionID: 's1' },
+        method: 'notifications/opencode/prompt/synthetic',
+        params: { text: 'go', sessionID: 's1', visible: true },
         jobID: 'mon_1',
         kind: 'mon',
       },

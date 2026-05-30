@@ -2,6 +2,7 @@ export type InvocationOrigin = 'user' | 'model' | 'synthetic' | 'system';
 
 export interface PluginContext {
   sessionID?: string;
+  agent?: string;
   invocationOrigin?: InvocationOrigin;
   registerSlashCommand(name: string, handler: (raw: string, ctx: PluginContext) => Promise<string>): void;
 }

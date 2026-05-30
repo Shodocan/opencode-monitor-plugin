@@ -36,7 +36,17 @@ function countConsecutiveBackslashes(s: string, from: number): number {
   return count;
 }
 
-function parseRegex(raw: string): { pattern: string; flags: string } {
+function stripWrappingQuotes(raw: string): string {
+  if (raw.length < 2) return raw;
+  const quote = raw[0];
+  if ((quote !== "'" && quote !== '"') || raw[raw.length - 1] !== quote) return raw;
+  const body = raw.slice(1, -1);
+  if (quote === "'") return body;
+  return body.replace(/\\(["\\])/g, '$1');
+}
+
+function parseRegex(rawInput: string): { pattern: string; flags: string } {
+  const raw = stripWrappingQuotes(rawInput.trim());
   if (raw.startsWith('/')) {
     let pos = 1;
     while (pos < raw.length) {

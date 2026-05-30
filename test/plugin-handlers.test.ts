@@ -62,6 +62,10 @@ function userCtx(sessionID = 's1'): PluginContext {
   return { sessionID, invocationOrigin: 'user', registerSlashCommand: vi.fn() };
 }
 
+function promptAsyncRequest(promptAsync: ReturnType<typeof vi.fn>): any {
+  return promptAsync.mock.calls[0]?.[0];
+}
+
 describe('plugin command handlers', () => {
   it('registers slash commands', () => {
     const registered = new Map<string, unknown>();
@@ -86,8 +90,8 @@ describe('plugin command handlers', () => {
   });
 
   it('server hook background tool returns immediately and publishes output later', async () => {
-    const publish = vi.fn(async () => ({ data: true }));
-    const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
+    const promptAsync = vi.fn(async () => ({ data: true }));
+    const hooks = await server({ client: { session: { promptAsync } }, directory: '/tmp/project' });
     const abort = new AbortController();
 
     const resultPromise = hooks.tool.opencode_monitor_background.execute(
@@ -109,8 +113,12 @@ describe('plugin command handlers', () => {
     ]);
 
     expect(result).toContain('started bg_1');
-    await vi.waitFor(() => expect(publish).toHaveBeenCalled(), { timeout: 3_000 });
-    expect(publish.mock.calls[0][0].body.properties.text).toContain('[stdout] ok');
+    await vi.waitFor(() => expect(promptAsync).toHaveBeenCalled(), { timeout: 3_000 });
+    const request = promptAsyncRequest(promptAsync);
+    expect(request.path.id).toBe('s1');
+    expect(request.body.agent).toBe('operator');
+    expect(request.body.parts[0]).toMatchObject({ type: 'text', synthetic: true, metadata: { opencodeMcpVisible: true, opencodeMonitorJobID: 'bg_1' } });
+    expect(request.body.parts[0].text).toContain('[stdout] ok');
     await hooks.__stop();
   });
 
@@ -123,10 +131,10 @@ describe('plugin command handlers', () => {
     await hooks.__stop();
   });
 
-  it('server hook publishes async append deliveries through the opencode client', async () => {
+  it('server hook submits visible synthetic deliveries through the opencode client', async () => {
     vi.useFakeTimers();
-    const publish = vi.fn(async () => ({ data: true }));
-    const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
+    const promptAsync = vi.fn(async () => ({ data: true }));
+    const hooks = await server({ client: { session: { promptAsync } }, directory: '/tmp/project' });
 
     await hooks.event({
       event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
@@ -146,22 +154,60 @@ describe('plugin command handlers', () => {
     );
 
     await vi.advanceTimersByTimeAsync(2500);
-    await vi.waitFor(() => expect(publish).toHaveBeenCalled());
-    expect(publish.mock.calls[0][0]).toMatchObject({
+    await vi.waitFor(() => expect(promptAsync).toHaveBeenCalled());
+    const request = promptAsyncRequest(promptAsync);
+    expect(request).toMatchObject({
       query: { directory: '/tmp/project' },
-      body: { type: 'tui.prompt.append', properties: { sessionID: 's1', submit: true } },
+      path: { id: 's1' },
+      body: { agent: 'operator' },
     });
-    expect(publish.mock.calls[0][0].body.properties.text).toBe('ok');
+    expect(request.body.parts[0]).toMatchObject({ type: 'text', text: 'ok', synthetic: true, metadata: { opencodeMcpVisible: true, opencodeMonitorJobID: 'sched_1', opencodeMonitorKind: 'sched' } });
     await hooks.__stop();
+    vi.useRealTimers();
+  });
+
+  it('server hook falls back to HTTP prompt_async for visible synthetic deliveries', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const hooks = await server({ serverUrl: new URL('http://127.0.0.1:4321'), directory: '/tmp/project' });
+
+    await hooks.event({
+      event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+    });
+    await hooks.tool.opencode_monitor_schedule.execute(
+      { raw: 'in 1s visible' },
+      {
+        sessionID: 's1',
+        messageID: 'm1',
+        agent: 'operator',
+        directory: process.cwd(),
+        worktree: process.cwd(),
+        abort: new AbortController().signal,
+        metadata: vi.fn(),
+        ask: vi.fn(),
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(2500);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe('http://127.0.0.1:4321/session/s1/prompt_async?directory=%2Ftmp%2Fproject');
+    expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json' } });
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ agent: 'operator', parts: [{ type: 'text', text: 'visible', synthetic: true, metadata: { opencodeMcpVisible: true, opencodeMonitorJobID: 'sched_1' } }] });
+
+    await hooks.__stop();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
   it('routes async deliveries through the owning plugin instance, not the shared bridge config', async () => {
     vi.useFakeTimers();
-    const publishOne = vi.fn(async () => ({ data: true }));
-    const publishTwo = vi.fn(async () => ({ data: true }));
-    const hooksOne = await server({ client: { tui: { publish: publishOne } }, directory: '/tmp/one' });
-    const hooksTwo = await server({ client: { tui: { publish: publishTwo } }, directory: '/tmp/two' });
+    const promptOne = vi.fn(async () => ({ data: true }));
+    const promptTwo = vi.fn(async () => ({ data: true }));
+    const hooksOne = await server({ client: { session: { promptAsync: promptOne } }, directory: '/tmp/one' });
+    const hooksTwo = await server({ client: { session: { promptAsync: promptTwo } }, directory: '/tmp/two' });
 
     await hooksOne.event({
       event: { type: 'session.status', properties: { sessionID: 's-one', status: { type: 'idle' } } },
@@ -186,13 +232,14 @@ describe('plugin command handlers', () => {
 
     await vi.advanceTimersByTimeAsync(2500);
 
-    await vi.waitFor(() => expect(publishOne).toHaveBeenCalledTimes(1));
-    expect(publishOne.mock.calls[0][0]).toMatchObject({
+    await vi.waitFor(() => expect(promptOne).toHaveBeenCalledTimes(1));
+    const request = promptAsyncRequest(promptOne);
+    expect(request).toMatchObject({
       query: { directory: '/tmp/one' },
-      body: { type: 'tui.prompt.append', properties: { sessionID: 's-one', submit: true } },
+      path: { id: 's-one' },
     });
-    expect(publishOne.mock.calls[0][0].body.properties.text).toBe('routed');
-    expect(publishTwo).not.toHaveBeenCalled();
+    expect(request.body.parts[0].text).toBe('routed');
+    expect(promptTwo).not.toHaveBeenCalled();
 
     await hooksOne.__stop();
     await hooksTwo.__stop();
@@ -201,8 +248,8 @@ describe('plugin command handlers', () => {
 
   it('loop prompt delivery is submitted as instructions, not untrusted log output', async () => {
     vi.useFakeTimers();
-    const publish = vi.fn(async () => ({ data: true }));
-    const hooks = await server({ client: { tui: { publish } }, directory: '/tmp/project' });
+    const promptAsync = vi.fn(async () => ({ data: true }));
+    const hooks = await server({ client: { session: { promptAsync } }, directory: '/tmp/project' });
 
     await hooks.event({
       event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
@@ -222,8 +269,10 @@ describe('plugin command handlers', () => {
     );
 
     await vi.advanceTimersByTimeAsync(1500);
-    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
-    const text = publish.mock.calls[0][0].body.properties.text;
+    await vi.waitFor(() => expect(promptAsync).toHaveBeenCalledTimes(1));
+    const request = promptAsyncRequest(promptAsync);
+    const text = request.body.parts[0].text;
+    expect(request.body.parts[0]).toMatchObject({ synthetic: true, metadata: { opencodeMcpVisible: true } });
     expect(text).toBe('use gh cli to watch PR 123 for review comments');
     expect(text).not.toContain('monitor triggered');
     expect(text).not.toContain('[loop]');
@@ -260,6 +309,27 @@ describe('plugin command handlers', () => {
     expect(scheduler.loops).toHaveLength(1);
     expect(scheduler.schedules).toHaveLength(1);
     expect(scheduler.schedules[0]).toMatchObject({ jobID: 'sched_2', sessionID: 's1', prompt: 'later' });
+  });
+
+  it('emits status snapshots for active jobs', async () => {
+    const scheduler = new FakeScheduler();
+    const snapshots: unknown[] = [];
+    const plugin = createMonitorPlugin({
+      health: async () => undefined,
+      scheduler,
+      onStatusChange: (snapshot) => snapshots.push(snapshot),
+    });
+
+    await plugin.handlers.loop('10s ping', userCtx('s1'));
+
+    expect(snapshots.at(-1)).toMatchObject({
+      version: 1,
+      jobs: [{ jobID: 'loop_1', kind: 'loop', sessionID: 's1', status: 'active' }],
+    });
+
+    await plugin.handlers.cancel('loop_1', userCtx('s1'));
+
+    expect(snapshots.at(-1)).toMatchObject({ version: 1, jobs: [] });
   });
 
   it('scheduler startup failure does not leave an active runtime', async () => {

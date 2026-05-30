@@ -1,4 +1,4 @@
-# opencode monitor plugin design
+# Opencode job management plugin design
 
 Date: 2026-05-27
 
@@ -80,7 +80,7 @@ The v1 commands are:
    - The notifier boundary is replaceable: any transport implementing the local endpoint contract may replace the bridge.
     - **Plugin-facing operation:** canonical operation name `appendSubmitToSession`. HTTP path is `POST /notify/append-submit` but the operation name remains `appendSubmitToSession`.
     - **Unix socket:** JSON `{ "op": "appendSubmitToSession", "body": { "sessionID": "...", "text": "..." } }`.
-    - Internally bridge may serialize select+append in a critical section; underlying append notification must include `sessionID` and `submit: true`. Race between select and append remains a known limitation.
+    - Internally bridge emits visible synthetic prompt notifications with required `sessionID` and `visible: true`; it must not use visible append for queued automatic deliveries.
     - `selectSession` is not a public plugin endpoint. If internal session selection is used, it is an internal bridge mechanism, not a plugin endpoint.
     - All auto-submitted deliveries require a valid `sessionID`. If sessionID is unavailable, the delivery is retained (not submitted) and the result is available for `/jobs` inspection.
 
@@ -137,7 +137,7 @@ The MCP bridge must register a notification handler and keep the latest status p
 - `retry`: treat as busy; do not write or submit.
 - unknown/no status yet: treat as busy until an explicit `idle` status arrives.
 
-Before each visible append+submit attempt, the bridge checks the latest cached status. If it is no longer `idle`, the flush stops and remaining deliveries stay queued. This is the v1 idle gate defined by the custom contract.
+Before each visible synthetic prompt delivery attempt, the bridge checks the latest cached status. If it is no longer `idle`, the flush stops and remaining deliveries stay queued. This is the v1 idle gate defined by the custom contract.
 
 ### Timer semantics
 
@@ -163,7 +163,7 @@ Before each visible append+submit attempt, the bridge checks the latest cached s
 - No CORS.
 - Body: strict JSON schema.
 - Endpoints:
-  - `POST /notify/append-submit` — append text to session and submit (HTTP path; canonical operation name remains `appendSubmitToSession`).
+  - `POST /notify/append-submit` — queue text for visible synthetic prompt delivery (HTTP path; canonical operation name remains `appendSubmitToSession`).
 
 **Bridge token/config recovery**
 - Before each delivery attempt, the plugin re-reads and validates the bridge config file (token, endpoint, socket path). Changed token or config is accepted after validation; stale or corrupted config causes the bridge to be treated as unavailable (queue policy applies).
@@ -456,7 +456,7 @@ type AutoSubmitRequest = {
 };
 ```
 
-The underlying custom `och` notification (`notifications/opencode/prompt/append`) accepts optional `sessionID`. The v1 plugin contract requires `sessionID` to guard against no-target fallback.
+Queued automatic deliveries use the custom `och` synthetic prompt notification (`notifications/opencode/prompt/synthetic`) with required `sessionID` and `visible: true`. The v1 plugin contract requires `sessionID` to guard against no-target fallback and avoid mutating visible user prompt input.
 
 ### Session requirements
 
@@ -574,7 +574,7 @@ If a retry also fails, the failure is logged through opencode plugin logging; th
 - Per-job: 1 delivery per 5 seconds.
 - Global: 5 deliveries per 10 seconds across all jobs.
 - Throttled monitor updates are queued and coalesced; background results are retained when throttled.
-- Idle-gate queuing happens before visible append+submit. Rate-limited deliveries also wait for idle; neither path may submit while the target session is busy.
+- Idle-gate queuing happens before visible synthetic prompt delivery. Rate-limited deliveries also wait for idle; neither path may submit while the target session is busy.
 - Coalesced deliveries merge matched windows (union of before/after lines) and deduplicate by `seq`.
 - **Coalescing boundary behavior:** coalescing reduces pending deliveries to at most one per job kind:
   - Loop ticks: coalesced to the latest pending tick (one per loop job).

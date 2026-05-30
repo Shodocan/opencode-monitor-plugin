@@ -7,6 +7,7 @@ import {
   PROCESS_OUTPUT_CAP_LINES,
 } from '../limits.js';
 import type { OutputEvent, OutputStream } from '../types.js';
+import { monitorDebug } from '../debug-log.js';
 
 // ----------------------------------------------------------------
 // Errors
@@ -76,6 +77,7 @@ export class ProcessRunner extends EventEmitter {
   #handles = new Map<string, ProcessHandle>();
   // jobID -> stdout/stderr -> TailBuffer
   #tails = new Map<string, Map<OutputStream, TailBuffer>>();
+  #nextSeq = 0;
 
   /**
    * Spawn a POSIX shell command.
@@ -96,12 +98,16 @@ export class ProcessRunner extends EventEmitter {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false, // spawn already does the shell thing
     });
+    monitorDebug('runner.spawn', { jobID, command, pid: child.pid });
 
     // Create the exit promise BEFORE attaching any listeners — avoids the
     // "fast process exits before handler attached" race. Use `close`, not
     // `exit`, so stdout/stderr have ended and final partial lines are flushed.
     const exitPromise = new Promise<number | null>((resolve) => {
-      child.once('close', (code) => resolve(code));
+      child.once('close', (code, signal) => {
+        monitorDebug('runner.close', { jobID, pid: child.pid, code, signal });
+        resolve(code);
+      });
     });
 
     void this.#onSpawn(jobID, child, exitPromise);
@@ -194,11 +200,10 @@ export class ProcessRunner extends EventEmitter {
     tails: Map<OutputStream, TailBuffer>,
   ): void {
     let buffer = '';
-    let seq = 0;
     let pendingEmptyLines = 0;
 
     const emitLine = (line: string) => {
-      this.#emit(jobID, type, ++seq, line);
+      this.#emit(jobID, type, line);
       tails.get(type)!.add(line);
     };
 
@@ -234,7 +239,9 @@ export class ProcessRunner extends EventEmitter {
     });
   }
 
-  #emit(jobID: string, stream: OutputStream, seq: number, line: string): void {
+  #emit(jobID: string, stream: OutputStream, line: string): void {
+    const seq = ++this.#nextSeq;
+    monitorDebug('runner.output', { jobID, seq, stream, line });
     this.emit('output', {
       jobID,
       seq,

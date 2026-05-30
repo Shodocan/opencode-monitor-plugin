@@ -7,6 +7,7 @@ export type DeliveryCallback = (request: AutoSubmitRequest) => void | Promise<vo
 export interface LoopConfig {
   jobID: string;
   sessionID: string;
+  agent?: string;
   intervalMs: number;
   prompt: string;
 }
@@ -14,6 +15,7 @@ export interface LoopConfig {
 export interface ScheduleConfig {
   jobID: string;
   sessionID: string;
+  agent?: string;
   runAt: Date;
   prompt: string;
 }
@@ -63,7 +65,7 @@ export class PromptScheduler {
       this.timers.delete(id);
       const cleanup = () => this.active.delete(id);
       try {
-        const result = this.delivery({ sessionID, jobID: id, kind, text: prompt, submit: true });
+        const result = this.delivery({ sessionID, agent: cfg.agent, jobID: id, kind, text: prompt, submit: true });
         if (result && typeof result.then === 'function') result.catch(() => {}).finally(cleanup);
         else cleanup();
       } catch {
@@ -118,6 +120,7 @@ export class PromptScheduler {
 
     const request = {
       sessionID: cfg.sessionID,
+      agent: cfg.agent,
       jobID: cfg.jobID,
       kind: 'loop' as JobKind,
       text: cfg.prompt,

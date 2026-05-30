@@ -159,7 +159,7 @@ describe('BridgeServer HTTP API', () => {
     expect(response.status).toBe(409);
   });
 
-  it('queues busy/retry/unknown sessions and delivers append notification only after idle', async () => {
+  it('queues busy/retry/unknown sessions and delivers hidden synthetic notification only after idle', async () => {
     const delivered: AppendNotification[] = [];
     const server = new BridgeServer({
       configPath: await tempConfigPath(),
@@ -196,8 +196,8 @@ describe('BridgeServer HTTP API', () => {
     server.setSessionStatus('s1', 'idle');
     expect(delivered).toEqual([
       {
-        method: 'notifications/opencode/prompt/append',
-        params: { text: 'submit me', submit: true, sessionID: 's1' },
+        method: 'notifications/opencode/prompt/synthetic',
+        params: { text: 'submit me', sessionID: 's1', visible: true },
         jobID: 'bg_9',
         kind: 'bg',
       },

@@ -45,6 +45,13 @@ describe('parseMonitor', () => {
     expect(result.command).toBe('echo hello');
   });
 
+  it('strips shell-style quotes around plain regex patterns', () => {
+    expect(parseMonitor("--regex 'MONITOR_FAKE_FIRE' -- echo hello").regex.source)
+      .toBe('MONITOR_FAKE_FIRE');
+    expect(parseMonitor('--regex "MONITOR_FAKE_FIRE" -- echo hello').regex.source)
+      .toBe('MONITOR_FAKE_FIRE');
+  });
+
   it('rejects unsupported flag g', () => {
     expect(() => parseMonitor('--regex /x/g -- echo x')).toThrow('unsupported regex flag');
   });
