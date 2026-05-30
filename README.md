@@ -200,3 +200,7 @@ npm run build
 ```
 
 Current suite covers parsers, registry, runner/ReDoS, monitor engine, bridge queues/server, notifier, plugin handlers, and integration behavior.
+
+## Support
+
+For issues, questions, or support: [wdcasonatto@gmail.com](mailto:wdcasonatto@gmail.com)
