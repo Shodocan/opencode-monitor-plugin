@@ -1,6 +1,18 @@
-# Opencode job management plugin
+# OpenCode background/monitor/loop/schedule plugin
 
-Slash-command and custom-tool plugin for opencode automation jobs that wait for the target session to become idle before submitting visible synthetic prompts through the hidden transport.
+Private OpenCode plugin for background automation jobs. It provides slash commands, AI-callable tools, idle-aware result delivery, and a TUI status indicator.
+
+## Capabilities
+
+- Run long shell commands without blocking the current assistant turn.
+- Watch long-running command output for regex matches and deliver matched windows.
+- Schedule one-shot prompts for later.
+- Run repeated prompt loops; missed ticks while the target session is busy coalesce into one delivery.
+- Queue all automatic deliveries until the target OpenCode session is idle.
+- Show active jobs in the OpenCode TUI sidebar/title/footer and prompt-side chip.
+- Cancel active jobs by job ID.
+- Keep v1 state in-memory only; no daemon or persistent job database.
+- Sanitize delivered output: nonce framing, ANSI/control stripping, and best-effort secret redaction.
 
 ## Commands
 
@@ -19,6 +31,76 @@ Slash commands are prompt templates that instruct the model to call the matching
 - `opencode_monitor_schedule`
 - `opencode_monitor_jobs`
 - `opencode_monitor_cancel`
+
+## OpenCode harness installation
+
+Use this section when adding the plugin to an OpenCode harness/config repository.
+
+### 1. Install package from private GitHub
+
+Keep the repository private unless it has been reviewed for public release. The package is marked `private: true`, which prevents accidental npm registry publication but still allows private GitHub installs.
+
+```bash
+npm install github:OWNER/opencode-monitor-plugin
+```
+
+Replace `OWNER` with the private GitHub owner/org. Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
+
+```bash
+npm install github:OWNER/opencode-monitor-plugin#<tag-or-commit>
+```
+
+The GitHub install runs `npm run prepare`, which builds `dist/` for the server plugin.
+
+Package entrypoints:
+
+- `opencode-monitor-plugin/server` -> server plugin, compiled from `dist/index.js`.
+- `opencode-monitor-plugin/tui` -> TUI plugin TSX source. OpenCode's TUI runtime loads TSX through Bun/OpenTUI; do not point TUI config at plain `tsc` output.
+
+### 2. Register server plugin in `opencode.json`
+
+Add the server entrypoint to the normal OpenCode config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-monitor-plugin/server"
+  ]
+}
+```
+
+### 3. Register TUI plugin in `tui.json`
+
+Add the TUI entrypoint to the OpenCode TUI config:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "opencode-monitor-plugin/tui"
+  ]
+}
+```
+
+### 4. Restart OpenCode
+
+Restart OpenCode after changing `opencode.json`, `tui.json`, or the installed package. Plugin config is loaded at startup.
+
+### 5. Smoke test
+
+Start a short monitor from an assistant turn:
+
+```text
+Use opencode_monitor_monitor with raw args:
+--regex OPENCODE_MONITOR_SMOKE --before 0 --after 0 --debounce 1 -- sh -c "sleep 2; printf 'OPENCODE_MONITOR_SMOKE ok\n'"
+```
+
+Expected:
+
+- Tool returns `started mon_N` immediately.
+- TUI shows an active monitor job while the command is running.
+- After the match, OpenCode receives a visible synthetic prompt with the matched output.
 
 ## Idle/busy delivery model
 
@@ -45,7 +127,7 @@ Security constraints:
 - HTTP listener is loopback-only
 - bearer tokens are 32 random bytes encoded as base64url
 
-## Installation/configuration
+## Local development installation
 
 Build the package and register the server plugin entry from `dist/index.js` in opencode config:
 
@@ -75,24 +157,9 @@ Register the TUI plugin entry from `src/tui.tsx` in `tui.json` for local develop
 
 The TUI plugin adds a visual running-job indicator in the prompt area plus a collapsible sidebar detail view.
 
-### Private GitHub package install
+## Private package safety checklist
 
-This repository is intended to remain private. Do not publish it publicly unless the repository has been reviewed for sensitive data and the package metadata is changed deliberately.
-
-Install from a private GitHub repository with npm, then let OpenCode add the server and TUI plugin targets from the package `exports` map:
-
-```bash
-npm install github:OWNER/opencode-monitor-plugin
-```
-
-Package entrypoints:
-
-- `opencode-monitor-plugin/server` -> `dist/index.js` server plugin
-- `opencode-monitor-plugin/tui` -> `src/tui.tsx` TUI plugin
-
-The package is marked `private: true` to prevent accidental npm registry publication. GitHub/private git installation still works because npm installs from the repository and runs `prepare` to build `dist/`.
-
-Before pushing or making the GitHub repository public, run:
+Before pushing, tagging, or changing repository visibility, run:
 
 ```bash
 npm run typecheck
@@ -100,7 +167,7 @@ npm test
 npm pack --dry-run
 ```
 
-Then inspect the pack list and run a secret scan over tracked and package files.
+Then inspect the pack list and run a secret scan over tracked and package files. Do not publish publicly unless this review is clean and intentional.
 
 ## Limits and safety notes
 
