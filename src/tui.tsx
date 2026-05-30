@@ -1,6 +1,7 @@
+/** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi } from '@opencode-ai/plugin/tui';
 import { createElement } from '@opentui/solid';
-import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import { readMonitorStatus, type MonitorIndicatorJob } from './status-store.js';
 import { monitorDebug } from './debug-log.js';
 
@@ -103,10 +104,22 @@ function compactJobs(jobs: MonitorIndicatorJob[]): string {
   return [...visible, extra].filter(Boolean).join(' ');
 }
 
+function commandHint(theme: () => Theme, command: string, description: string) {
+  return (
+    <box flexDirection="row" gap={1}>
+      <text flexShrink={0} fg={theme().info}>›</text>
+      <text fg={theme().textMuted} wrapMode="word">
+        <span style={{ fg: theme().text }}>{command}</span>{' '}
+        {description}
+      </text>
+    </box>
+  );
+}
+
 function Compact(props: { api: TuiPluginApi; session_id?: string }) {
   const theme = () => props.api.theme.current;
   const jobs = useJobs(props.api, props.session_id);
-  const display = createMemo(() => (jobs().length > 0 ? `Opencode jobs ${compactJobs(jobs())}` : ''));
+  const display = createMemo(() => (jobs().length > 0 ? `jobs ${compactJobs(jobs())}` : 'jobs idle'));
   let lastDisplay = '';
   createEffect(() => {
     const next = display();
@@ -117,7 +130,7 @@ function Compact(props: { api: TuiPluginApi; session_id?: string }) {
   });
   return (
     <box flexDirection="row" gap={1}>
-      <text fg={theme().warning} wrapMode="none">{() => display()}</text>
+      <text fg={theme().warning} wrapMode="none">{display()}</text>
     </box>
   );
 }
@@ -129,27 +142,49 @@ function Detail(props: { api: TuiPluginApi; session_id?: string }) {
 
   return (
     <box>
-      {() => (jobs().length > 0
-        ? [
+      <Show
+        when={jobs().length > 0}
+        fallback={(
+          <box>
+            <box flexDirection="row" gap={1}>
+              <text fg={theme().success}>○</text>
+              <text fg={theme().text}>
+                <b>OpenCode jobs</b>{' '}
+                <span style={{ fg: theme().textMuted }}>(idle)</span>
+              </text>
+            </box>
+            <text fg={theme().textMuted} wrapMode="word">
+              Run background work and deliver results when this session is idle.
+            </text>
+            {commandHint(theme, '/background', 'run a shell command')}
+            {commandHint(theme, '/monitor', 'watch command output for a regex')}
+            {commandHint(theme, '/loop', 'repeat an instruction on an interval')}
+            {commandHint(theme, '/schedule', 'submit one future instruction')}
+          </box>
+        )}
+      >
+        <box>
           <box flexDirection="row" gap={1}>
             <text fg={theme().textMuted}>●</text>
             <text fg={theme().text}>
-              <b>Opencode job management plugin</b>{' '}
+              <b>OpenCode jobs</b>{' '}
               <span style={{ fg: theme().textMuted }}>({jobs().length} active · {summary()})</span>
             </text>
-          </box>,
-          ...jobs().map((job) => (
-            <box flexDirection="row" gap={1}>
-              <text flexShrink={0} fg={kindColor(theme(), job.kind)}>●</text>
-              <text fg={theme().text} wrapMode="none">
-                <b>{job.jobID}</b>{' '}
-                <span style={{ fg: kindColor(theme(), job.kind) }}>{title(job.kind)}</span>{' '}
-                <span style={{ fg: statusColor(theme(), job.status) }}>{statusLabel(job.status)}</span>
-              </text>
-            </box>
-          )),
-        ]
-        : '')}
+          </box>
+          <For each={jobs()}>
+            {(job) => (
+              <box flexDirection="row" gap={1}>
+                <text flexShrink={0} fg={kindColor(theme(), job.kind)}>●</text>
+                <text fg={theme().text} wrapMode="none">
+                  <b>{job.jobID}</b>{' '}
+                  <span style={{ fg: kindColor(theme(), job.kind) }}>{title(job.kind)}</span>{' '}
+                  <span style={{ fg: statusColor(theme(), job.status) }}>{statusLabel(job.status)}</span>
+                </text>
+              </box>
+            )}
+          </For>
+        </box>
+      </Show>
     </box>
   );
 }
@@ -157,27 +192,42 @@ function Detail(props: { api: TuiPluginApi; session_id?: string }) {
 export const tui: TuiPlugin = async (api) => {
   monitorDebug('tui.init', { scope: scope(api) });
   api.slots.register({
-    order: 250,
+    order: 10_000,
     slots: {
+      sidebar_title(_ctx, props) {
+        monitorDebug('tui.slot.sidebar_title.render', { scope: scope(api), sessionID: props.session_id, title: props.title });
+        return (
+          <box paddingRight={1}>
+            <text fg={api.theme.current.text}>
+              <b>OpenCode jobs</b>
+            </text>
+            <text fg={api.theme.current.textMuted}>background · monitor · loop · schedule</text>
+          </box>
+        );
+      },
       session_prompt_right(_ctx, props) {
         monitorDebug('tui.slot.session_prompt_right.render', { scope: scope(api), sessionID: props.session_id });
-        return Compact({ api, session_id: props.session_id });
+        return <Compact api={api} session_id={props.session_id} />;
       },
       home_prompt_right() {
         monitorDebug('tui.slot.home_prompt_right.render', { scope: scope(api) });
-        return Compact({ api });
+        return <Compact api={api} />;
       },
       home_bottom() {
         monitorDebug('tui.slot.home_bottom.render', { scope: scope(api) });
-        return Compact({ api });
+        return <Compact api={api} />;
       },
       app_bottom() {
         monitorDebug('tui.slot.app_bottom.render', { scope: scope(api) });
-        return Compact({ api });
+        return <Compact api={api} />;
       },
       sidebar_content(_ctx, props) {
         monitorDebug('tui.slot.sidebar_content.render', { scope: scope(api), sessionID: props.session_id });
-        return Detail({ api, session_id: props.session_id });
+        return <Detail api={api} session_id={props.session_id} />;
+      },
+      sidebar_footer(_ctx, props) {
+        monitorDebug('tui.slot.sidebar_footer.render', { scope: scope(api), sessionID: props.session_id });
+        return <Compact api={api} session_id={props.session_id} />;
       },
     },
   });

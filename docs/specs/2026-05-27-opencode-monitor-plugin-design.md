@@ -80,7 +80,7 @@ The v1 commands are:
    - The notifier boundary is replaceable: any transport implementing the local endpoint contract may replace the bridge.
     - **Plugin-facing operation:** canonical operation name `appendSubmitToSession`. HTTP path is `POST /notify/append-submit` but the operation name remains `appendSubmitToSession`.
     - **Unix socket:** JSON `{ "op": "appendSubmitToSession", "body": { "sessionID": "...", "text": "..." } }`.
-    - Internally bridge emits visible synthetic prompt notifications with required `sessionID` and `visible: true`; it must not use visible append for queued automatic deliveries.
+    - Internally bridge emits visible synthetic prompt notifications with required `sessionID` and `visible: true`; visible transcript rendering uses the opencode-injected header `◇ MCP · <server-name>`. MCP clients do not pass the caller name. The bridge must not use visible append for queued automatic deliveries.
     - `selectSession` is not a public plugin endpoint. If internal session selection is used, it is an internal bridge mechanism, not a plugin endpoint.
     - All auto-submitted deliveries require a valid `sessionID`. If sessionID is unavailable, the delivery is retained (not submitted) and the result is available for `/jobs` inspection.
 
@@ -456,7 +456,7 @@ type AutoSubmitRequest = {
 };
 ```
 
-Queued automatic deliveries use the custom `och` synthetic prompt notification (`notifications/opencode/prompt/synthetic`) with required `sessionID` and `visible: true`. The v1 plugin contract requires `sessionID` to guard against no-target fallback and avoid mutating visible user prompt input.
+Queued automatic deliveries use the custom `och` synthetic prompt notification (`notifications/opencode/prompt/synthetic`) with required `sessionID` and `visible: true`. Visible transcript rendering shows `◇ MCP · <server-name>`, where opencode injects `<server-name>` from the connected MCP server name; MCP clients do not provide it. The v1 plugin contract requires `sessionID` to guard against no-target fallback and avoid mutating visible user prompt input.
 
 ### Session requirements
 

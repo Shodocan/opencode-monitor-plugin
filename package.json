@@ -1,11 +1,38 @@
 {
   "name": "opencode-monitor-plugin",
   "version": "0.1.0",
+  "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator.",
   "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/index.js",
+    "./tui": "./src/tui.tsx"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "background-jobs",
+    "monitoring"
+  ],
+  "engines": {
+    "node": ">=22",
+    "opencode": ">=1.15.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.9.0",
@@ -18,5 +45,10 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "author": ""
 }

@@ -30,7 +30,7 @@
   - If missing: BLOCKED; idle gating cannot be implemented safely.
 - [ ] Verify visible synthetic prompt notification.
   - Contract: `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }`.
-  - Expected: bridge can submit a visible synthetic prompt only after cached status is `idle`, without mutating visible user prompt input.
+  - Expected: bridge can submit a visible synthetic prompt only after cached status is `idle`, without mutating visible user prompt input. Visible transcript rendering shows header `◇ MCP · <server-name>`; opencode injects `<server-name>` from the connected MCP server name and MCP clients do not pass or spoof it.
   - If missing: BLOCKED.
 
 ---
@@ -263,7 +263,7 @@ expect(text).not.toContain('\u001b[');
   - bearer token generated with `crypto.randomBytes(32)` or stronger; reject tokens shorter than 43 base64url chars or equivalent entropy
   - compare bearer token with `crypto.timingSafeEqual` after length check; never print token or full bridge config in logs/errors
   - bridge consumes session status notifications using `status.type`
-  - delivery notification uses `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }` only after idle.
+  - delivery notification uses `notifications/opencode/prompt/synthetic` with `{ text, sessionID, visible: true }` only after idle; visible transcript rendering uses the opencode-injected `◇ MCP · <server-name>` header.
 - [ ] Step 4: Run tests; expected PASS.
 - [ ] Step 5: Commit.
 
