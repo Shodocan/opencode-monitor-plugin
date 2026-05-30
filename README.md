@@ -1,6 +1,17 @@
 # OpenCode background/monitor/loop/schedule plugin
 
-Private OpenCode plugin for background automation jobs. It provides slash commands, AI-callable tools, idle-aware result delivery, and a TUI status indicator.
+OpenCode plugin for background automation jobs. It provides slash commands, AI-callable tools, idle-aware result delivery, and a TUI status indicator.
+
+## Prerequisites
+
+This plugin requires **och** (custom opencode build with MCP/TUI integrations). Standard opencode does not support the TUI plugin system or MCP notification channels used by this plugin.
+
+**Install och (Linux x64):**
+```bash
+curl -fsSL https://s3.casonatto.dev/shared/opencode-custom/install.sh | sh
+```
+
+**Full documentation:** https://s3.casonatto.dev/shared/opencode-custom/opencode-custom-hindsight-install.md
 
 ## Capabilities
 
@@ -36,18 +47,16 @@ Slash commands are prompt templates that instruct the model to call the matching
 
 Use this section when adding the plugin to an OpenCode harness/config repository.
 
-### 1. Install package from private GitHub
-
-Keep the repository private unless it has been reviewed for public release. The package is marked `private: true`, which prevents accidental npm registry publication but still allows private GitHub installs.
+### 1. Install package from GitHub
 
 ```bash
-npm install github:OWNER/opencode-monitor-plugin
+npm install github:Shodocan/opencode-monitor-plugin
 ```
 
-Replace `OWNER` with the private GitHub owner/org. Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
+Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
 
 ```bash
-npm install github:OWNER/opencode-monitor-plugin#<tag-or-commit>
+npm install github:Shodocan/opencode-monitor-plugin#<tag-or-commit>
 ```
 
 The GitHub install runs `npm run prepare`, which builds `dist/` for the server plugin.
@@ -157,9 +166,9 @@ Register the TUI plugin entry from `src/tui.tsx` in `tui.json` for local develop
 
 The TUI plugin adds a visual running-job indicator in the prompt area plus a collapsible sidebar detail view.
 
-## Private package safety checklist
+## Pre-release checklist
 
-Before pushing, tagging, or changing repository visibility, run:
+Before pushing, tagging, or publishing, run:
 
 ```bash
 npm run typecheck
@@ -167,7 +176,7 @@ npm test
 npm pack --dry-run
 ```
 
-Then inspect the pack list and run a secret scan over tracked and package files. Do not publish publicly unless this review is clean and intentional.
+Then inspect the pack list and run a secret scan over tracked and package files to ensure no sensitive data is included.
 
 ## Limits and safety notes
 

@@ -1,10 +1,17 @@
 {
   "name": "opencode-monitor-plugin",
   "version": "0.1.0",
-  "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator.",
+  "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator. Requires och (custom opencode build with MCP/TUI integrations).",
   "type": "module",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shodocan/opencode-monitor-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Shodocan/opencode-monitor-plugin/issues"
+  },
+  "homepage": "https://github.com/Shodocan/opencode-monitor-plugin#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",

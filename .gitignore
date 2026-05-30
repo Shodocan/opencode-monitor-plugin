@@ -26,3 +26,37 @@ Thumbs.db
 
 # Git worktrees
 .worktrees/
+
+# Sensitive files - NEVER commit
+AGENTS.md
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+secrets/
+credentials/
+*.credentials
+*.secret
+
+# Personal config
+.opencode/
+tui.json
+opencode.json
+runtime.env
+
+# Logs
+*.log
+logs/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+tmp/
+temp/
+.cache/
