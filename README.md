@@ -47,17 +47,21 @@ Slash commands are prompt templates that instruct the model to call the matching
 
 ## OpenCode harness installation
 
-Use this section when adding the plugin to an OpenCode harness/config repository.
+Use this section when adding the plugin to an OpenCode harness/config repository. Run `npm install` from the same directory that owns the `opencode.json` and `tui.json` files, because the config examples below use relative `./node_modules/...` paths. For the default global OpenCode config, that directory is `~/.config/opencode`.
 
 ### 1. Install package from GitHub
 
 ```bash
+cd ~/.config/opencode
 npm install github:Shodocan/opencode-monitor-plugin
 ```
+
+This is a GitHub npm dependency. It is not published to the npm registry yet.
 
 Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
 
 ```bash
+cd ~/.config/opencode
 npm install github:Shodocan/opencode-monitor-plugin#<tag-or-commit>
 ```
 
