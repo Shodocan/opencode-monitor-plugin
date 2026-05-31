@@ -25,7 +25,7 @@
     "./server": "./dist/index.js",
     "./tui": {
       "types": "./dist/tui.d.ts",
-      "import": "./dist/tui.js"
+      "import": "./src/tui.tsx"
     }
   },
   "files": [
