@@ -61,12 +61,14 @@ Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
 npm install github:Shodocan/opencode-monitor-plugin#<tag-or-commit>
 ```
 
-The GitHub install runs `npm run prepare`, which builds `dist/` for the server plugin.
+The GitHub install runs `npm run prepare`, which builds `dist/`.
 
-Package entrypoints:
+Use direct installed file paths in OpenCode config. Bare package subpaths like `opencode-monitor-plugin/tui` can be treated by OpenCode as packages to install, so GitHub-installed packages should be referenced through `./node_modules/...` from the config directory.
 
-- `opencode-monitor-plugin/server` -> server plugin, compiled from `dist/index.js`.
-- `opencode-monitor-plugin/tui` -> compiled TUI plugin from `dist/tui.js`.
+Installed entrypoints:
+
+- `./node_modules/opencode-monitor-plugin/dist/index.js` -> server plugin.
+- `./node_modules/opencode-monitor-plugin/dist/tui.js` -> TUI plugin.
 
 ### 2. Register server plugin in `opencode.json`
 
@@ -76,7 +78,7 @@ Add the server entrypoint to the normal OpenCode config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-monitor-plugin/server"
+    "./node_modules/opencode-monitor-plugin/dist/index.js"
   ]
 }
 ```
@@ -89,7 +91,7 @@ Add the TUI entrypoint to the OpenCode TUI config:
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "opencode-monitor-plugin/tui"
+    "./node_modules/opencode-monitor-plugin/dist/tui.js"
   ]
 }
 ```
@@ -158,11 +160,11 @@ Example opencode config fragment:
 
 Restart opencode after changing plugin/config files; config is loaded at startup.
 
-Register the TUI plugin entry as `opencode-monitor-plugin/tui` in `tui.json` for package-based validation. For local development, you can point `tui.json` at `src/tui.tsx` or `dist/tui.js` after `npm run build`.
+Register the TUI plugin entry in `tui.json`. For package-based validation, use `./node_modules/opencode-monitor-plugin/dist/tui.js`. For local development, point `tui.json` at `./dist/tui.js` after `npm run build`.
 
 ```json
 {
-  "plugin": ["./src/tui.tsx"]
+  "plugin": ["./dist/tui.js"]
 }
 ```
 
