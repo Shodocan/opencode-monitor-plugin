@@ -68,7 +68,7 @@ Use direct installed file paths in OpenCode config. Bare package subpaths like `
 Installed entrypoints:
 
 - `./node_modules/opencode-monitor-plugin/dist/index.js` -> server plugin.
-- `./node_modules/opencode-monitor-plugin/dist/tui.js` -> TUI plugin.
+- `./node_modules/opencode-monitor-plugin/src/tui.tsx` -> TUI plugin. OpenCode's TUI runtime loads TSX through OpenTUI runtime plugin support; plain `tsc` output can load but does not render the indicator correctly.
 
 ### 2. Register server plugin in `opencode.json`
 
@@ -91,8 +91,11 @@ Add the TUI entrypoint to the OpenCode TUI config:
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "./node_modules/opencode-monitor-plugin/dist/tui.js"
-  ]
+    "./node_modules/opencode-monitor-plugin/src/tui.tsx"
+  ],
+  "plugin_enabled": {
+    "opencode-monitor-indicator": true
+  }
 }
 ```
 
@@ -160,11 +163,11 @@ Example opencode config fragment:
 
 Restart opencode after changing plugin/config files; config is loaded at startup.
 
-Register the TUI plugin entry in `tui.json`. For package-based validation, use `./node_modules/opencode-monitor-plugin/dist/tui.js`. For local development, point `tui.json` at `./dist/tui.js` after `npm run build`.
+Register the TUI plugin entry in `tui.json`. For package-based validation, use `./node_modules/opencode-monitor-plugin/src/tui.tsx`. For local development, point `tui.json` at `./src/tui.tsx`.
 
 ```json
 {
-  "plugin": ["./dist/tui.js"]
+  "plugin": ["./src/tui.tsx"]
 }
 ```
 
