@@ -66,7 +66,7 @@ The GitHub install runs `npm run prepare`, which builds `dist/` for the server p
 Package entrypoints:
 
 - `opencode-monitor-plugin/server` -> server plugin, compiled from `dist/index.js`.
-- `opencode-monitor-plugin/tui` -> TUI plugin TSX source. OpenCode's TUI runtime loads TSX through Bun/OpenTUI; do not point TUI config at plain `tsc` output.
+- `opencode-monitor-plugin/tui` -> compiled TUI plugin from `dist/tui.js`.
 
 ### 2. Register server plugin in `opencode.json`
 
@@ -158,7 +158,7 @@ Example opencode config fragment:
 
 Restart opencode after changing plugin/config files; config is loaded at startup.
 
-Register the TUI plugin entry from `src/tui.tsx` in `tui.json` for local development. OpenCode's TUI plugin runtime loads TSX through Bun/OpenTUI; the plain `tsc`-emitted `dist/tui.js` does not go through OpenTUI's JSX transform.
+Register the TUI plugin entry as `opencode-monitor-plugin/tui` in `tui.json` for package-based validation. For local development, you can point `tui.json` at `src/tui.tsx` or `dist/tui.js` after `npm run build`.
 
 ```json
 {

@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi } from '@opencode-ai/plugin/tui';
 import { createElement } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
