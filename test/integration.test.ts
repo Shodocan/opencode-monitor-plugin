@@ -128,6 +128,22 @@ describe('opencode monitor plugin integration', () => {
     expect(delivered[0].params.text).toContain('coalesced 3 loop ticks');
   });
 
+  it('deduplicates identical monitor deliveries while busy into one annotated delivery', async () => {
+    const delivered: AppendNotification[] = [];
+    const { server, configPath } = await startBridge(delivered);
+    server.setSessionStatus('s1', 'busy');
+
+    for (let i = 0; i < 3; i++) {
+      await appendSubmitToSession({ sessionID: 's1', jobID: 'mon_1', kind: 'mon', text: 'window', submit: true }, configPath);
+    }
+    expect(delivered).toEqual([]);
+
+    server.setSessionStatus('s1', 'idle');
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    expect(delivered[0].params.text).toContain('window');
+    expect(delivered[0].params.text).toContain('[deduped 3 identical messages while session was busy]');
+  });
+
   it('scheduled prompt fires once and waits for idle', async () => {
     const delivered: AppendNotification[] = [];
     const { server, configPath } = await startBridge(delivered);
