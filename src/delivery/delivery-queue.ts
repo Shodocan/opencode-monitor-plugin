@@ -1,5 +1,7 @@
 import type { AutoSubmitRequest } from '../types.js';
 import { BRIDGE_UNAVAILABLE_EXPIRY_MS } from '../limits.js';
+import { dedupKey, isDedupEligible } from './dedup.js';
+import { monitorDebug } from '../debug-log.js';
 
 // ----------------------------------------------------------------
 // Pending entry in the delivery queue (bridge-unavailable)
@@ -24,6 +26,8 @@ export interface DeliveryPendingEntry {
 export class DeliveryQueue {
   #pending: DeliveryPendingEntry[] = [];
   #dropped = 0;
+  #dedupKeys: Set<string> = new Set();
+  #deduped = 0;
 
   get length(): number {
     return this.#pending.length;
@@ -31,6 +35,10 @@ export class DeliveryQueue {
 
   get dropped(): number {
     return this.#dropped;
+  }
+
+  get deduped(): number {
+    return this.#deduped;
   }
 
   // -- Enqueue --------------------------------------------------
@@ -41,6 +49,16 @@ export class DeliveryQueue {
    */
   enqueue(req: AutoSubmitRequest): void {
     this.#pruneExpired();
+    if (isDedupEligible(req.kind)) {
+      const dk = dedupKey(req);
+      if (this.#dedupKeys.has(dk)) {
+        this.#deduped += 1;
+        this.#dropped += 1;
+        monitorDebug('deliveryQueue.dedup', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind });
+        return;
+      }
+      this.#dedupKeys.add(dk);
+    }
     this.#pending.push({
       req,
       enqueuedAt: Date.now(),
@@ -63,6 +81,7 @@ export class DeliveryQueue {
       drained.push(entry.req);
     }
     this.#pending.length = 0;
+    this.#dedupKeys.clear();
     return drained;
   }
 
@@ -76,6 +95,9 @@ export class DeliveryQueue {
 
     for (const entry of this.#pending) {
       if (now - entry.enqueuedAt >= expiry) {
+        if (isDedupEligible(entry.req.kind)) {
+          this.#dedupKeys.delete(dedupKey(entry.req));
+        }
         this.#dropped += 1;
         pruned += 1;
       } else {
@@ -126,6 +148,7 @@ export class DeliveryQueue {
     }
 
     this.#pending = remaining;
+    this.#dedupKeys.clear();
     return delivered;
   }
 }

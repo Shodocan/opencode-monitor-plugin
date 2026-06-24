@@ -208,3 +208,71 @@ describe('DeliveryQueue no direct mutation leak', () => {
     expect(q.drain()).toEqual([]);
   });
 });
+
+// ----------------------------------------------------------------
+// Content dedup
+// ----------------------------------------------------------------
+
+describe('DeliveryQueue content dedup', () => {
+  it('drops duplicate eligible payloads and counts them', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    expect(q.length).toBe(1);
+    expect(q.deduped).toBe(2);
+    expect(q.dropped).toBe(2);
+  });
+
+  it('keeps distinct payloads separate', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('mon_1', 'mon', 'a'));
+    q.enqueue(req('mon_1', 'mon', 'b'));
+    expect(q.length).toBe(2);
+    expect(q.deduped).toBe(0);
+  });
+
+  it('does not dedup loop entries', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('loop_1', 'loop', 'tick'));
+    q.enqueue(req('loop_1', 'loop', 'tick'));
+    expect(q.length).toBe(2);
+    expect(q.deduped).toBe(0);
+  });
+
+  it('accepts the same payload again after drain clears the key', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    expect(q.length).toBe(1);
+    q.drain();
+    expect(q.length).toBe(0);
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    expect(q.length).toBe(1);
+    expect(q.deduped).toBe(1);
+  });
+
+  it('accepts the same payload again after flush clears the key', () => {
+    const q = new DeliveryQueue();
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    let count = 0;
+    q.flush(() => {
+      count += 1;
+      return true;
+    });
+    expect(count).toBe(1);
+    q.enqueue(req('mon_1', 'mon', 'window'));
+    expect(q.length).toBe(1);
+  });
+
+  it('clears dedupKey when an expired entry is pruned', () => {
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => 0);
+    const q = new DeliveryQueue();
+    q.enqueue(req('old', 'mon', 'window'));
+    spy.mockImplementation(() => BRIDGE_UNAVAILABLE_EXPIRY_MS + 1);
+    q.enqueue(req('new', 'mon', 'other'));
+    q.enqueue(req('old', 'mon', 'window'));
+    expect(q.length).toBe(2);
+    spy.mockRestore();
+  });
+});
