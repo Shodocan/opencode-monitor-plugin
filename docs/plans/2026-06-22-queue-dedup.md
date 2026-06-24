@@ -442,7 +442,7 @@ with:
           if (!ok) break;
 ```
 
-**Site 3 — `#evictFifo`** (followed by `this.#globalOrder.splice(idx, 1);` then `this.byteSize -= entry.byteSize;` then `this.dropped += 1;` — note: NO `if (!ok)` line). Replace:
+**Sites 3 & 4 — `#evictFifo` and `#evictOldestForJob`** (both have a structurally identical four-line removal body ending with `this.dropped += 1;` then `}`). Both need the same `this.#clearDedupKey(entry);` insertion. Since the body is identical across both methods, use a single Edit with `replace_all: true` to update both at once. Replace all occurrences of:
 
 ```typescript
     this.#pending.delete(key);
@@ -452,7 +452,7 @@ with:
   }
 ```
 
-with:
+with (all occurrences):
 
 ```typescript
     this.#clearDedupKey(entry);
@@ -463,35 +463,9 @@ with:
   }
 ```
 
-**Site 4 — `#evictOldestForJob`** (structurally identical to Site 3 — same four lines — but it is a *different* method. To target it uniquely, include the method's distinctive preceding line: the predicate `return entry !== undefined && entry.req.sessionID === sessionID && entry.req.jobID === jobID;`). The body to replace is the same four-line block as Site 3. Since `replace_all: false` rejects ambiguous matches, do this edit by matching a larger block that includes the unique predicate comment above it. Replace:
+This updates both `#evictFifo` and `#evictOldestForJob` in one edit.
 
-```typescript
-   * Evict the oldest entry for a specific job using findIndex + splice.
-   */
-  #evictOldestForJob(sessionID: string, jobID: string): void {
-```
-
-(no change to those lines) — instead, perform the Site 4 edit by first doing Site 3 (which removes one occurrence), leaving Site 4's four-line block as the only remaining occurrence of that exact sequence; then a second Edit with `replace_all: false` on the now-unique four-line block inserts `this.#clearDedupKey(entry);` before it. Concretely: after Site 3 is done, run this Edit (old → new):
-
-old:
-```typescript
-    this.#pending.delete(key);
-    this.#globalOrder.splice(idx, 1);
-    this.byteSize -= entry.byteSize;
-    this.dropped += 1;
-  }
-```
-new:
-```typescript
-    this.#clearDedupKey(entry);
-    this.#pending.delete(key);
-    this.#globalOrder.splice(idx, 1);
-    this.byteSize -= entry.byteSize;
-    this.dropped += 1;
-  }
-```
-
-After all four edits, verify by searching the file: every `this.#pending.delete(key);` must now be immediately preceded by `this.#clearDedupKey(entry);`. There should be exactly four of each.
+After all edits, verify by searching the file: every `this.#pending.delete(key);` must now be immediately preceded by `this.#clearDedupKey(entry);`. There should be exactly four of each.
 
 - [ ] **Step 7: Extend `#requestForDelivery` with dedup annotation**
 
@@ -519,17 +493,31 @@ Replace the entire `#requestForDelivery` method (the block starting with `#reque
   }
 ```
 
-- [ ] **Step 8: Run tests to verify they pass**
+- [ ] **Step 8: Include `deduped` in the existing enqueue debug log**
+
+Locate the `monitorDebug('idleQueue.enqueue', { ... })` call inside the `enqueue` method (it currently logs `dropped: this.dropped, byteSize: this.byteSize`). Add `deduped: this.deduped` so the dedup counter is visible alongside `dropped` in debug output. Replace:
+
+```typescript
+    monitorDebug('idleQueue.enqueue', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, pendingCount: this.pendingCount, dropped: this.dropped, byteSize: this.byteSize });
+```
+
+with:
+
+```typescript
+    monitorDebug('idleQueue.enqueue', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, pendingCount: this.pendingCount, dropped: this.dropped, deduped: this.deduped, byteSize: this.byteSize });
+```
+
+- [ ] **Step 9: Run tests to verify they pass**
 
 Run: `npx vitest run test/idle-queue.test.ts`
-Expected: PASS — all new dedup tests green, all existing tests (including `coalesced 3 loop ticks` at line 229) still pass.
+Expected: PASS — all new dedup tests green, all existing tests (including the `coalesced 3 loop ticks` assertion) still pass.
 
-- [ ] **Step 9: Typecheck**
+- [ ] **Step 10: Typecheck**
 
 Run: `npm run typecheck`
 Expected: no errors.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add src/bridge/idle-queue.ts test/idle-queue.test.ts
