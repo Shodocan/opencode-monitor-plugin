@@ -20,8 +20,8 @@ function req(
   return { sessionID, jobID, kind, text, submit: true };
 }
 
-function bigReq(text: string = '.'.repeat(4096)): AutoSubmitRequest {
-  return req('s1', 'bg_xxx', 'bg', text);
+function bigReq(text: string = '.'.repeat(4096), jobID: string = 'bg_xxx'): AutoSubmitRequest {
+  return req('s1', jobID, 'bg', text);
 }
 
 let delivered: AutoSubmitRequest[];
@@ -313,8 +313,10 @@ describe('IdleQueue caps', () => {
     const q = new IdleQueue('busy', deliveryStub);
     const bytesPer = 4 * 1024; // 4 KiB each
     const needed = Math.ceil(MAX_QUEUE_BYTES_TOTAL / bytesPer) + 2;
+    // Distinct jobID per enqueue so content-dedup does not coalesce them;
+    // the test's intent is to exceed the byte cap and assert FIFO eviction.
     for (let i = 0; i < needed; i++) {
-      q.enqueue(bigReq('.'.repeat(bytesPer)));
+      q.enqueue(bigReq('.'.repeat(bytesPer), `bg_${i}`));
     }
     expect(q.byteSize).toBeLessThan(MAX_QUEUE_BYTES_TOTAL + bytesPer);
     expect(q.dropped).toBeGreaterThan(0);
@@ -385,5 +387,116 @@ describe('IdleQueue no direct mutation leak', () => {
     }
     // After eviction, pendingCount reflects actual entries
     expect(q.pendingCount).toBeLessThanOrEqual(MAX_PENDING_GLOBAL);
+  });
+});
+
+// ----------------------------------------------------------------
+// IdleQueue — content dedup (mon/bg/sched)
+// ----------------------------------------------------------------
+
+describe('IdleQueue content dedup', () => {
+  it('coalesces 3 identical mon entries into one with dedupCount', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    expect(q.pendingCount).toBe(1);
+    expect(q.deduped).toBe(2);
+    const entry = q.peek()[0];
+    expect(entry.dedupCount).toBe(3);
+    expect(entry.coalesced).toBeUndefined();
+  });
+
+  it('annotates delivery with dedup count', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.setSessionStatus('idle');
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].text).toContain('window');
+    expect(delivered[0].text).toContain('[deduped 3 identical messages while session was busy]');
+  });
+
+  it('keeps distinct payloads as separate entries', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'a'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'b'));
+    expect(q.pendingCount).toBe(2);
+    expect(q.deduped).toBe(0);
+  });
+
+  it('treats re-fired identical payload after flush as a fresh event', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.setSessionStatus('idle');
+    expect(delivered).toHaveLength(1);
+    q.setSessionStatus('busy');
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    expect(q.pendingCount).toBe(1);
+    const entry = q.peek()[0];
+    expect(entry.dedupCount).toBe(1);
+  });
+
+  it('coalesces bg and sched kinds too', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'bg_1', 'bg', 'out'));
+    q.enqueue(req('s1', 'bg_1', 'bg', 'out'));
+    q.enqueue(req('s1', 'sched_1', 'sched', 'run'));
+    q.enqueue(req('s1', 'sched_1', 'sched', 'run'));
+    expect(q.pendingCount).toBe(2);
+    expect(q.deduped).toBe(2);
+  });
+
+  it('does not coalesce across kinds for the same jobID', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'j1', 'mon', 'same'));
+    q.enqueue(req('s1', 'j1', 'bg', 'same'));
+    expect(q.pendingCount).toBe(2);
+    expect(q.deduped).toBe(0);
+  });
+
+  it('does not coalesce across sessions', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'window'));
+    q.enqueue(req('s2', 'mon_1', 'mon', 'window'));
+    expect(q.pendingCount).toBe(2);
+    expect(q.deduped).toBe(0);
+  });
+
+  it('preserves order: coalesced entry keeps its original position', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    q.enqueue(req('s1', 'bg_1', 'bg', 'first'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'mid'));
+    q.enqueue(req('s1', 'sched_1', 'sched', 'last'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'mid'));
+    q.enqueue(req('s1', 'mon_1', 'mon', 'mid'));
+    q.setSessionStatus('idle');
+    expect(delivered.map((d) => d.jobID)).toEqual(['bg_1', 'mon_1', 'sched_1']);
+  });
+
+  it('deduped entry is evictable by FIFO (caps stay enforced)', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    for (let i = 0; i < MAX_PENDING_GLOBAL; i++) {
+      q.enqueue(req('s1', `mon_${i}`, 'mon', 'window'));
+    }
+    expect(q.pendingCount).toBeLessThanOrEqual(MAX_PENDING_GLOBAL);
+    q.enqueue(req('s1', 'mon_overflow', 'mon', 'window'));
+    expect(q.pendingCount).toBeLessThanOrEqual(MAX_PENDING_GLOBAL);
+    expect(q.dropped).toBeGreaterThanOrEqual(1);
+  });
+
+  it('per-job cap evicts a deduped entry and clears its dedupKey', () => {
+    const q = new IdleQueue('busy', deliveryStub);
+    for (let i = 0; i < MAX_PENDING_PER_JOB; i++) {
+      q.enqueue(req('s1', 'mon_1', 'mon', `w_${i}`));
+    }
+    expect(q.pendingCount).toBe(MAX_PENDING_PER_JOB);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'w_overflow'));
+    expect(q.pendingCount).toBe(MAX_PENDING_PER_JOB);
+    q.enqueue(req('s1', 'mon_1', 'mon', 'w_0'));
+    const entry = q.peek().find((e) => e.req.text === 'w_0');
+    expect(entry?.dedupCount).toBe(1);
   });
 });

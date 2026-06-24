@@ -5,6 +5,7 @@ import {
   MAX_QUEUE_BYTES_TOTAL,
 } from '../limits.js';
 import { monitorDebug } from '../debug-log.js';
+import { dedupKey, isDedupEligible } from '../delivery/dedup.js';
 
 // ----------------------------------------------------------------
 // Session status type
@@ -54,6 +55,10 @@ export interface IdlePendingEntry {
   coalesced?: boolean;
   /** tick count carried only for /loop coalesced entries */
   coalescedTickCount?: number;
+  /** dedupKey stored on the entry so removal can clear the index without a reverse lookup */
+  dedupKey?: string;
+  /** repeat count for content dedup (mon/bg/sched); absent or 1 means no dedup */
+  dedupCount?: number;
 }
 
 // ----------------------------------------------------------------
@@ -66,6 +71,8 @@ export class IdleQueue {
   #pending: Map<string, IdlePendingEntry>;
   #globalOrder: string[];
   #nextEntryID = 0;
+  #dedupIndex: Map<string, string> = new Map();
+  #deduped = 0;
 
   byteSize = 0;
   dropped = 0;
@@ -97,6 +104,11 @@ export class IdleQueue {
   /** Total number of pending entries (including coalesced). */
   get pendingCount(): number {
     return this.#pending.size;
+  }
+
+  /** Count of content-deduplicated enqueues (coalesced into an existing entry). */
+  get deduped(): number {
+    return this.#deduped;
   }
 
   /**
@@ -204,6 +216,7 @@ export class IdleQueue {
           } catch {
             ok = false;
           }
+          this.#clearDedupKey(entry);
           this.#pending.delete(key);
           this.#globalOrder.splice(idx, 1);
           this.byteSize -= entry.byteSize;
@@ -230,6 +243,7 @@ export class IdleQueue {
     } catch {
       ok = false;
     }
+    this.#clearDedupKey(entry);
     this.#pending.delete(key);
     this.byteSize -= entry.byteSize;
     return ok;
@@ -244,7 +258,7 @@ export class IdleQueue {
     } else {
       this.#enqueueStandard(req, byteSize);
     }
-    monitorDebug('idleQueue.enqueue', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, pendingCount: this.pendingCount, dropped: this.dropped, byteSize: this.byteSize });
+    monitorDebug('idleQueue.enqueue', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, pendingCount: this.pendingCount, dropped: this.dropped, deduped: this.deduped, byteSize: this.byteSize });
   }
 
   #coalescedKey(req: AutoSubmitRequest): string {
@@ -283,6 +297,29 @@ export class IdleQueue {
   }
 
   #enqueueStandard(req: AutoSubmitRequest, byteSize: number): void {
+    // Content dedup: if an identical eligible payload is already pending,
+    // coalesce in place — replace req, bump dedupCount, keep position.
+    // Returns before #applyCaps so dedup never triggers eviction.
+    if (isDedupEligible(req.kind)) {
+      const dk = dedupKey(req);
+      const existingKey = this.#dedupIndex.get(dk);
+      if (existingKey !== undefined) {
+        const existing = this.#pending.get(existingKey);
+        if (existing) {
+          const prevBytes = existing.byteSize;
+          existing.req = req;
+          existing.byteSize = byteSize;
+          existing.dedupCount = (existing.dedupCount ?? 1) + 1;
+          this.byteSize += byteSize - prevBytes;
+          this.#deduped += 1;
+          monitorDebug('idleQueue.dedup', { sessionID: req.sessionID, jobID: req.jobID, kind: req.kind, dedupCount: existing.dedupCount });
+          return;
+        }
+        // Stale index entry (should not happen) — fall through to normal enqueue.
+        this.#dedupIndex.delete(dk);
+      }
+    }
+
     const key = this.#standardKey(req);
     const entry: IdlePendingEntry = { req, byteSize };
     this.#applyCaps();
@@ -296,6 +333,13 @@ export class IdleQueue {
     this.#pending.set(key, entry);
     this.#globalOrder.push(key);
     this.byteSize += byteSize;
+
+    if (isDedupEligible(req.kind)) {
+      const dk = dedupKey(req);
+      entry.dedupKey = dk;
+      entry.dedupCount = 1;
+      this.#dedupIndex.set(dk, key);
+    }
   }
 
   #applyCaps(): void {
@@ -332,6 +376,7 @@ export class IdleQueue {
     const entry = this.#pending.get(key);
     if (!entry) return;
 
+    this.#clearDedupKey(entry);
     this.#pending.delete(key);
     this.#globalOrder.splice(idx, 1);
     this.byteSize -= entry.byteSize;
@@ -352,6 +397,7 @@ export class IdleQueue {
     const entry = this.#pending.get(key);
     if (!entry) return;
 
+    this.#clearDedupKey(entry);
     this.#pending.delete(key);
     this.#globalOrder.splice(idx, 1);
     this.byteSize -= entry.byteSize;
@@ -362,13 +408,31 @@ export class IdleQueue {
     return new TextEncoder().encode(req.text).length;
   }
 
+  /** Clear an entry's dedupKey from the index, if it has one. */
+  #clearDedupKey(entry: IdlePendingEntry): void {
+    if (entry.dedupKey !== undefined) {
+      this.#dedupIndex.delete(entry.dedupKey);
+    }
+  }
+
   #requestForDelivery(entry: IdlePendingEntry): AutoSubmitRequest {
+    // /loop coalescing annotation (unchanged)
     const count = entry.coalescedTickCount ?? 1;
-    if (!entry.coalesced || count <= 1) return entry.req;
-    return {
-      ...entry.req,
-      text: `${entry.req.text}\n\n[coalesced ${count} loop ticks while session was busy]`,
-    };
+    if (entry.coalesced && count > 1) {
+      return {
+        ...entry.req,
+        text: `${entry.req.text}\n\n[coalesced ${count} loop ticks while session was busy]`,
+      };
+    }
+    // Content dedup annotation (mon/bg/sched) — distinct wording
+    const dedup = entry.dedupCount ?? 1;
+    if (dedup > 1) {
+      return {
+        ...entry.req,
+        text: `${entry.req.text}\n\n[deduped ${dedup} identical messages while session was busy]`,
+      };
+    }
+    return entry.req;
   }
 }
 
