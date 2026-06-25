@@ -1,6 +1,6 @@
 {
   "name": "opencode-monitor-plugin",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator. Requires och (custom opencode build with MCP/TUI integrations).",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,8 @@
   "files": [
     "dist/",
     "src/",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "opencode",
