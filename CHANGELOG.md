@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-10
+
+### Added
+- Richer compact indicator chip: animated spinner, per-kind colored badges
+  (`bg×2 · mon×1`), elapsed timer on longest job, queue depth badge,
+  bridge-down indicator.
+- Sidebar dashboard: header totals `(N active · N queued · N done · N failed)`,
+  per-job rows with spinner + elapsed + delivery status badge, auto-expanded
+  live output tail for the first active job (last 3 lines).
+- Per-job tail files at
+  `$XDG_RUNTIME_DIR/opencode-monitor/tail/<scopeHash>/<jobID>.log` (capped 3
+  lines, debounced 1s writes, cleaned up on job dispose).
+- Snapshot v2: `queueDepth`, `dedupedCount`, `coalescedTicks`, `bridgeUp`,
+  `queueDropped`, `completedCount`, `failedCount`, `scheduledPending`; per-job
+  `createdAt`, `deliveryStatus`, `hasTail`.
+- `opentui-spinner` integration with `animations_enabled` kv gate.
+- Skill: `opencode-monitor-jobs` for agent awareness of background/monitor/loop/schedule tools.
+
+### Changed
+- TUI slots reduced to sidebar only (title, content, footer) — no more repeated
+  idle indicators across prompt-right, home-bottom, app-bottom.
+- Idle state simplified to single `○ jobs idle` line (removed command hint wall).
+- Tail preview capped at last 3 lines.
+- `@opentui/core` added as explicit dependency with npm overrides for
+  `opentui-spinner` peer compat.
+
+### Fixed
+- Backward-compatible snapshot reader: v1 snapshots read with v2 defaults.
+- `scheduledPending` interval cleaned up on `__stop`.
+
 ## [1.1.0] - 2026-07-10
 
 ### Fixed
