@@ -1,6 +1,6 @@
 {
   "name": "opencode-monitor-plugin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator. Requires och (custom opencode build with MCP/TUI integrations).",
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/Shodocan/opencode-monitor-plugin#readme",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-tui.mjs",
     "prepare": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
@@ -25,12 +25,13 @@
     "./server": "./dist/index.js",
     "./tui": {
       "types": "./dist/tui.d.ts",
-      "import": "./src/tui.tsx"
+      "import": "./dist/tui.js"
     }
   },
   "files": [
     "dist/",
     "src/",
+    "scripts/",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -43,23 +44,46 @@
   ],
   "engines": {
     "node": ">=22",
-    "opencode": ">=1.15.0"
+    "opencode": ">=1.17.11"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.9.0",
-    "@opencode-ai/plugin": "^1.15.12",
-    "@opentui/solid": "^0.2.16",
+    "@opencode-ai/plugin": "^1.17.11",
+    "@opentui/core": "^0.4.3",
+    "@opentui/solid": "^0.4.3",
+    "opentui-spinner": "^0.0.7",
     "solid-js": "^1.9.12",
     "zod": "^3.24.0"
   },
+  "peerDependencies": {
+    "@opentui/core": ">=0.4.3",
+    "@opentui/keymap": ">=0.4.3"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/keymap": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/preset-typescript": "^7.27.1",
     "@types/node": "^22.10.0",
+    "babel-preset-solid": "^1.9.12",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
   "directories": {
     "doc": "docs",
     "test": "test"
+  },
+  "overrides": {
+    "opentui-spinner": {
+      "@opentui/core": "^0.4.3",
+      "@opentui/solid": "^0.4.3"
+    }
   },
   "author": "Walisson Casonatto <wdcasonatto@gmail.com>"
 }

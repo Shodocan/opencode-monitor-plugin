@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-10
+
+### Fixed
+- TUI indicator broken on OpenCode/OpenTUI 0.4.x because host no longer
+  transforms plugin TSX under `node_modules`.
+
+### Changed
+- Ship precompiled `dist/tui.js` as the public `./tui` export (Solid universal
+  ESM via `scripts/build-tui.mjs`).
+- Bump `@opencode-ai/plugin` to `^1.17.11`, `@opentui/solid` to `^0.4.3`.
+- Minimum opencode engine `>=1.17.11`.
+
+### Migration
+- Point `tui.json` at `./node_modules/opencode-monitor-plugin/dist/tui.js`
+  instead of `src/tui.tsx`.
+- Reinstall/update the package and restart OpenCode after changing the path.
+
 ## [1.0.0] - 2026-06-22
 
 First public release of `opencode-monitor-plugin`.
@@ -48,8 +65,8 @@ First public release of `opencode-monitor-plugin`.
 
 ### Engineering
 - In-memory v1 state only — no daemon or persistent job database.
-- Vitest suite (315 tests) covers delivery, queues, dedup, caps, parsers,
-  monitor engine, scheduler, bridge server, and end-to-end integration.
+- Vitest suite covers delivery, queues, dedup, caps, parsers, monitor engine,
+  scheduler, bridge server, and end-to-end integration.
 - TypeScript ESM build via `tsc -p tsconfig.json`.
 
 ### Prerequisites
@@ -57,4 +74,4 @@ First public release of `opencode-monitor-plugin`.
   [anomalyco/opencode#30019](https://github.com/anomalyco/opencode/pull/30019)
   merges upstream. Standard opencode does not yet support the TUI plugin
   system or MCP notification channels used by this plugin.
-- Node `>=22`, opencode `>=1.15.0`.
+- Node `>=22`, opencode `>=1.15.0` (raised to `>=1.17.11` in 1.1.0).
