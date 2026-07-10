@@ -192,6 +192,11 @@ export class BridgeServer {
     this.#idleQueue = new IdleQueue(undefined, (req) => onAppend(toSyntheticNotification(req)));
   }
 
+  /** Expose idle queue stats for status reporting. */
+  get idleQueue(): IdleQueue {
+    return this.#idleQueue;
+  }
+
   async start(): Promise<BridgeConfig> {
     if (this.#server) return this.#config!;
     const host = this.#options.host ?? '127.0.0.1';

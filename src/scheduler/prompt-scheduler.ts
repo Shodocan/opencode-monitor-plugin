@@ -111,6 +111,11 @@ export class PromptScheduler {
     return new Set(this.active);
   }
 
+  /** Number of pending loops/schedules. */
+  get pendingCount(): number {
+    return this.active.size;
+  }
+
   // ----------------------------------------------------------------
   // Internals
   // ----------------------------------------------------------------

@@ -191,6 +191,7 @@ export class JobRegistry {
       sessionRef: entry.sessionRef,
       deliveryStatus: entry.deliveryStatus,
       queueDroppedCount: entry.queueDroppedCount,
+      createdAt: entry.createdAt,
     };
   }
 

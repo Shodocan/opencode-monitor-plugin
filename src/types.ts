@@ -27,6 +27,7 @@ export interface JobStatus {
   sessionRef?: string;
   deliveryStatus?: DeliveryStatus;
   queueDroppedCount?: number;
+  createdAt: number;
 }
 
 export interface FormatterOptions {

@@ -323,13 +323,13 @@ describe('plugin command handlers', () => {
     await plugin.handlers.loop('10s ping', userCtx('s1'));
 
     expect(snapshots.at(-1)).toMatchObject({
-      version: 1,
+      version: 2,
       jobs: [{ jobID: 'loop_1', kind: 'loop', sessionID: 's1', status: 'active' }],
     });
 
     await plugin.handlers.cancel('loop_1', userCtx('s1'));
 
-    expect(snapshots.at(-1)).toMatchObject({ version: 1, jobs: [] });
+    expect(snapshots.at(-1)).toMatchObject({ version: 2, jobs: [] });
   });
 
   it('scheduler startup failure does not leave an active runtime', async () => {

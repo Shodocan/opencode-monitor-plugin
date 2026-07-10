@@ -11,7 +11,7 @@ import { formatAutoSubmit, formatCancel, formatDelivery, formatJobs } from './de
 import { appendSubmitToSession, health as bridgeHealth } from './delivery/notifier.js';
 import type { AutoSubmitRequest, JobKind, OutputStream } from './types.js';
 import { BridgeServer, type PromptSyntheticNotification } from './bridge/server.js';
-import { type MonitorIndicatorSnapshot, writeMonitorStatus } from './status-store.js';
+import { type MonitorIndicatorSnapshot, writeMonitorStatus, writeMonitorTail, removeMonitorTail } from './status-store.js';
 import { monitorDebug } from './debug-log.js';
 
 type CommandHandler = (raw: string, ctx: PluginContext) => Promise<string>;
@@ -29,6 +29,7 @@ interface SchedulerLike {
   scheduleLoop(cfg: LoopConfig): void;
   scheduleOnce(cfg: ScheduleConfig): void;
   cancel(jobID: string): boolean;
+  pendingCount: number;
 }
 
 export interface MonitorPluginDependencies {
@@ -39,11 +40,18 @@ export interface MonitorPluginDependencies {
   health?: () => Promise<unknown>;
   now?: () => Date;
   onStatusChange?: (snapshot: MonitorIndicatorSnapshot) => void;
+  statusScope?: string;
+  getQueueDepth?: () => number;
+  getDedupedCount?: () => number;
+  getCoalescedTicks?: () => number;
+  getBridgeUp?: () => boolean;
+  getScheduledPending?: () => number;
 }
 
 export interface MonitorPlugin {
   registerCommands(ctx: PluginContext): void;
   handlers: Record<string, CommandHandler>;
+  getScheduledPending: () => number;
 }
 
 interface OpencodePluginInput {
@@ -124,13 +132,49 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   const health = deps.health ?? bridgeHealth;
   const now = deps.now ?? (() => new Date());
   const runtimes = new Map<string, JobRuntime>();
+  const tailJobs = new Set<string>(); // jobIDs that have output tails (bg, mon)
+  const tailWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const flushTail = (jobID: string) => {
+    const scope = deps.statusScope ?? process.cwd();
+    const stdoutLines = runner.tail(jobID, 'stdout').map((line) => ({ stream: 'stdout', line }));
+    const stderrLines = runner.tail(jobID, 'stderr').map((line) => ({ stream: 'stderr', line }));
+    const allLines = [...stdoutLines, ...stderrLines].slice(-3);
+    const truncated = allLines.length >= 3;
+    void writeMonitorTail(scope, jobID, allLines, truncated).catch((error) => {
+      monitorDebug('tail.write.error', { jobID, error: error instanceof Error ? error.message : String(error) });
+    });
+  };
+
+  const scheduleTailWrite = (jobID: string) => {
+    if (!tailJobs.has(jobID)) return;
+    const existing = tailWriteTimers.get(jobID);
+    if (existing) return; // already scheduled within debounce window
+    const timer = setTimeout(() => {
+      tailWriteTimers.delete(jobID);
+      flushTail(jobID);
+    }, 1000);
+    tailWriteTimers.set(jobID, timer);
+  };
+
+  const cleanupTail = (jobID: string) => {
+    const timer = tailWriteTimers.get(jobID);
+    if (timer) { clearTimeout(timer); tailWriteTimers.delete(jobID); }
+    tailJobs.delete(jobID);
+    const scope = deps.statusScope ?? process.cwd();
+    void removeMonitorTail(scope, jobID);
+  };
 
   const emitStatus = () => {
     const timestamp = Date.now();
+    const allJobs = registry.list();
+    const completedCount = allJobs.filter((j) => j.status === 'completed').length;
+    const failedCount = allJobs.filter((j) => j.status === 'failed').length;
+    const queueDropped = allJobs.reduce((sum, j) => sum + (j.queueDroppedCount ?? 0), 0);
     const snapshot: MonitorIndicatorSnapshot = {
-      version: 1,
+      version: 2,
       updatedAt: timestamp,
-      jobs: registry.list()
+      jobs: allJobs
         .filter((job) => runtimes.has(job.jobID))
         .map((job) => ({
           jobID: job.jobID,
@@ -139,9 +183,20 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           status: job.status,
           startedAt: timestamp,
           updatedAt: timestamp,
+          createdAt: job.createdAt,
+          deliveryStatus: job.deliveryStatus ?? 'unknown',
+          hasTail: tailJobs.has(job.jobID),
         })),
+      queueDepth: deps.getQueueDepth?.() ?? 0,
+      dedupedCount: deps.getDedupedCount?.() ?? 0,
+      coalescedTicks: deps.getCoalescedTicks?.() ?? 0,
+      bridgeUp: deps.getBridgeUp?.() ?? true,
+      queueDropped,
+      completedCount,
+      failedCount,
+      scheduledPending: deps.getScheduledPending?.() ?? 0,
     };
-    monitorDebug('plugin.status.emit', { jobs: snapshot.jobs.map((job) => ({ jobID: job.jobID, kind: job.kind, sessionID: job.sessionID, status: job.status })) });
+    monitorDebug('plugin.status.emit', { jobs: snapshot.jobs.length, queueDepth: snapshot.queueDepth, bridgeUp: snapshot.bridgeUp });
     deps.onStatusChange?.(snapshot);
   };
 
@@ -191,31 +246,43 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       monitorDebug('plugin.background.start', { sessionID, command: parsed.command });
       await ensureBridgeAvailable();
       const jobID = registry.register('bg');
+      tailJobs.add(jobID);
       registerRuntime(jobID, sessionID, 'bg', () => runner.cancel(jobID));
 
       try {
         const handle = runner.run(jobID, parsed.command);
+        // Wire output events for tail writing
+        const bgOutputHandler = (event: OutputEvent) => {
+          if (event.jobID === jobID) scheduleTailWrite(jobID);
+        };
+        runner.on?.('output', bgOutputHandler);
         void handle.exitPromise.then(async (code) => {
           monitorDebug('plugin.background.runner.exit', { jobID, sessionID, code });
           try {
+            flushTail(jobID);
             const formatted = formatDelivery(backgroundText(jobID, code, runner)).text;
             await deliver({ sessionID, agent, jobID, kind: 'bg', text: formatted, submit: true }, true);
             registry.complete(jobID);
           } catch (error) {
             failJob(jobID, error);
           } finally {
+            if (bgOutputHandler) runner.off?.('output', bgOutputHandler);
             runner.dispose(jobID);
             runtimes.delete(jobID);
+            cleanupTail(jobID);
             emitStatus();
           }
         }).catch((error) => {
           failJob(jobID, error);
+          if (bgOutputHandler) runner.off?.('output', bgOutputHandler);
           runner.dispose(jobID);
           runtimes.delete(jobID);
+          cleanupTail(jobID);
           emitStatus();
         });
       } catch (error) {
         runtimes.delete(jobID);
+        cleanupTail(jobID);
         registry.fail(jobID);
         emitStatus();
         throw error;
@@ -241,6 +308,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       });
       await ensureBridgeAvailable();
       const jobID = registry.register('mon');
+      tailJobs.add(jobID);
       let engine: MonitorEngine | undefined;
       let outputHandler: ((event: OutputEvent) => void) | undefined;
 
@@ -249,6 +317,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         if (outputHandler && runner.off) runner.off('output', outputHandler);
         runner.dispose(jobID);
         runtimes.delete(jobID);
+        cleanupTail(jobID);
         emitStatus();
       };
       registerRuntime(jobID, sessionID, 'mon', async () => {
@@ -271,7 +340,10 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           },
         });
         outputHandler = (event: OutputEvent) => {
-          if (event.jobID === jobID) monitorDebug('plugin.monitor.output', { jobID, seq: event.seq, stream: event.stream, line: event.line });
+          if (event.jobID === jobID) {
+            monitorDebug('plugin.monitor.output', { jobID, seq: event.seq, stream: event.stream, line: event.line });
+            scheduleTailWrite(jobID);
+          }
           engine?.ingest(event);
         };
         runner.on?.('output', outputHandler);
@@ -358,6 +430,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
 
   return {
     handlers,
+    getScheduledPending: () => scheduler.pendingCount,
     registerCommands(ctx: PluginContext): void {
       for (const [name, handler] of Object.entries(handlers)) {
         ctx.registerSlashCommand(name, handler);
@@ -460,10 +533,21 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
     health: async () => undefined,
     notify: async (request) => bridge.notify(request),
     onStatusChange: publishStatus,
+    statusScope,
+    getQueueDepth: () => bridge.idleQueue.pendingCount,
+    getDedupedCount: () => bridge.idleQueue.deduped,
+    getCoalescedTicks: () => bridge.idleQueue.peek().reduce((sum, e) => sum + (e.coalescedTickCount ?? 0), 0),
+    getBridgeUp: () => true,
+    getScheduledPending: () => scheduledPendingHolder.value,
   });
-  publishStatus({ version: 1, updatedAt: Date.now(), jobs: [] });
+  const scheduledPendingHolder = { value: 0 };
+  // Update scheduled pending periodically via the plugin's accessor
+  const scheduledPendingTimer = setInterval(() => { scheduledPendingHolder.value = plugin.getScheduledPending(); }, 1000);
+  scheduledPendingTimer.unref?.();
+  publishStatus({ version: 2, updatedAt: Date.now(), jobs: [], queueDepth: 0, dedupedCount: 0, coalescedTicks: 0, bridgeUp: true, queueDropped: 0, completedCount: 0, failedCount: 0, scheduledPending: 0 });
   return {
     __stop: async () => {
+      clearInterval(scheduledPendingTimer);
       await bridge.stop();
     },
     event: async ({ event }: { event: { type?: string; properties?: Record<string, unknown> } }) => {
