@@ -4,9 +4,7 @@ OpenCode plugin for background automation jobs. It provides slash commands, AI-c
 
 ## Prerequisites
 
-This plugin requires **och**, a custom opencode build with MCP/TUI integrations. Today, **och is just opencode plus [anomalyco/opencode#30019](https://github.com/anomalyco/opencode/pull/30019)** until that PR is merged upstream. Standard opencode does not yet support the TUI plugin system or MCP notification channels used by this plugin.
-
-If this plugin is useful to you, please help by upvoting/supporting [anomalyco/opencode#30019](https://github.com/anomalyco/opencode/pull/30019) so these hooks can land in upstream opencode.
+This plugin requires **och** (OpenCode >= 1.17.11-RC1) with the OpenTUI 0.4.x plugin runtime. OpenTUI 0.4+ no longer Solid-transforms `.tsx` files under `node_modules`, so this package ships a precompiled `dist/tui.js` as the public TUI entry.
 
 **Install och (Linux x64):**
 ```bash
@@ -72,7 +70,9 @@ Use direct installed file paths in OpenCode config. Bare package subpaths like `
 Installed entrypoints:
 
 - `./node_modules/opencode-monitor-plugin/dist/index.js` -> server plugin.
-- `./node_modules/opencode-monitor-plugin/src/tui.tsx` -> TUI plugin. OpenCode's TUI runtime loads TSX through OpenTUI runtime plugin support; plain `tsc` output can load but does not render the indicator correctly.
+- `./node_modules/opencode-monitor-plugin/dist/tui.js` -> TUI plugin (precompiled Solid universal ESM).
+
+**Why `dist/tui.js` instead of `src/tui.tsx`:** OpenTUI 0.4+ does not Solid-transform package sources under `node_modules`; this package ships a precompiled Solid universal ESM entry at `dist/tui.js`.
 
 ### 2. Register server plugin in `opencode.json`
 
@@ -95,7 +95,7 @@ Add the TUI entrypoint to the OpenCode TUI config:
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "./node_modules/opencode-monitor-plugin/src/tui.tsx"
+    "./node_modules/opencode-monitor-plugin/dist/tui.js"
   ],
   "plugin_enabled": {
     "opencode-monitor-indicator": true
@@ -167,13 +167,18 @@ Example opencode config fragment:
 
 Restart opencode after changing plugin/config files; config is loaded at startup.
 
-Register the TUI plugin entry in `tui.json`. For package-based validation, use `./node_modules/opencode-monitor-plugin/src/tui.tsx`. For local development, point `tui.json` at `./src/tui.tsx`.
+Register the TUI plugin entry in `tui.json`. Prefer the precompiled entry after build:
 
 ```json
 {
-  "plugin": ["./src/tui.tsx"]
+  "plugin": ["./dist/tui.js"]
 }
 ```
+
+For package-based installs under `~/.config/opencode`, use
+`./node_modules/opencode-monitor-plugin/dist/tui.js`. Pointing at `src/tui.tsx`
+only works when that path is **outside** `node_modules` (OpenTUI 0.4+ skips
+Solid transforms under `node_modules`).
 
 The TUI plugin adds a visual running-job indicator in the prompt area plus a collapsible sidebar detail view.
 
@@ -210,7 +215,7 @@ npm run typecheck
 npm run build
 ```
 
-Current suite covers parsers, registry, runner/ReDoS, monitor engine, bridge queues/server, notifier, plugin handlers, and integration behavior.
+Current suite covers parsers, registry, runner/ReDoS, monitor engine, bridge queues/server, notifier, plugin handlers, TUI build output, and integration behavior.
 
 ## Support
 

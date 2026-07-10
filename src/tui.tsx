@@ -1,5 +1,5 @@
+/** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi } from '@opencode-ai/plugin/tui';
-import { createElement } from '@opentui/solid';
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import { readMonitorStatus, type MonitorIndicatorJob } from './status-store.js';
 import { monitorDebug } from './debug-log.js';
@@ -188,7 +188,7 @@ function Detail(props: { api: TuiPluginApi; session_id?: string }) {
   );
 }
 
-export const tui: TuiPlugin = async (api) => {
+export const tui: TuiPlugin = async (api, _options, _meta) => {
   monitorDebug('tui.init', { scope: scope(api) });
   api.slots.register({
     order: 10_000,
