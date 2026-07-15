@@ -26,7 +26,9 @@ if (!result?.code) {
 }
 
 // Sanity checks — reject leftover JSX tags and source-path imports.
-if (/<[A-Za-z][\w.-]*[\s/>]/.test(result.code)) {
+// Strip comments before checking to avoid false positives from JSX in comments.
+const codeNoComments = result.code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+if (/<[A-Za-z][\w.-]*[\s/>]/.test(codeNoComments)) {
   console.error('build-tui: untransformed JSX remains in output')
   process.exit(1)
 }

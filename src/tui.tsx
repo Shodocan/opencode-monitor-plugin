@@ -1,12 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi } from '@opencode-ai/plugin/tui';
-import { getComponentCatalogue } from '@opentui/solid';
-import { registerSpinner } from 'opentui-spinner/solid';
 import { createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import { readMonitorStatus, readMonitorTail, type MonitorIndicatorJob, type MonitorIndicatorSnapshot, type MonitorTailLine } from './status-store.js';
 import { monitorDebug } from './debug-log.js';
 
-if (!getComponentCatalogue().spinner) registerSpinner();
+// The host (och) registers <spinner> via opentui-spinner at TUI startup.
+// We do not import opentui-spinner here because it lives in the top-level
+// node_modules while @opentui/solid is nested in the plugin's node_modules,
+// causing a cross-module resolution failure. The <spinner> intrinsic is
+// always available because the host registers it before loading plugins.
 
 declare global {
   namespace JSX {

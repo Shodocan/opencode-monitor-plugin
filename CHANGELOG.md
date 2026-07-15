@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-07-15
+
+### Fixed
+- TUI plugin failed to load on OpenCode 1.18.x because `opentui-spinner/solid`
+  imported `@opentui/solid/components` which couldn't resolve across nested
+  `node_modules` boundaries. Removed the `opentui-spinner` dependency entirely —
+  the host (och) already registers the `<spinner>` intrinsic at TUI startup, so
+  plugins can use `<spinner>` directly without importing `opentui-spinner`.
+- Build script and test JSX sanity check now strip comments before matching to
+  avoid false positives from JSX-like text in comments.
+
 ## [1.2.0] - 2026-07-10
 
 ### Added
