@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-08-30
+
+### Fixed
+- Cancel tool no longer reports `cannot be cancelled (status: completed)` on a
+  successful kill. The cancel handler awaited the runner kill (SIGTERM + exit
+  wait) before transitioning the registry, so the background exit dispatch
+  (`registry.complete`) could land first; the kill always worked (exit code
+  null, no output leak) but the tool result was a misleading error. The
+  registry now transitions to `cancelled` before the kill is awaited —
+  `complete()`/`fail()` only act on active entries, so the concurrent exit
+  transition becomes a no-op. Covered by a regression test.
+
 ## [1.2.1] - 2026-07-15
 
 ### Fixed
