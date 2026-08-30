@@ -373,6 +373,38 @@ describe('plugin command handlers', () => {
     await expect(plugin.handlers.cancel('bg_missing', userCtx('s1'))).rejects.toThrow(/not found/);
   });
 
+  it('/cancel reports cancelled when the process exit lands before the registry transition', async () => {
+    // Regression: the cancel handler awaits runtime.dispose() (SIGTERM) before
+    // registry.cancel(). The real runner resolves its exitPromise chain when the
+    // child dies, so the background exit handler (registry.complete) can run
+    // before the cancel handler reaches registry.cancel() — which then throws
+    // "cannot be cancelled (status: completed)" at the user even though the kill
+    // worked. The handler must mark the job cancelled regardless.
+    const runner = new FakeRunner();
+    const notified: AutoSubmitRequest[] = [];
+    const plugin = createMonitorPlugin({
+      runner,
+      health: async () => undefined,
+      notify: async (request) => { notified.push(request); },
+    });
+
+    await plugin.handlers.background('echo one', userCtx('s1'));
+
+    // Simulate the real runner: dispose() (the cancel path) resolves the
+    // exitPromise as the SIGTERM'd child dies.
+    const origCancel = runner.cancel.bind(runner);
+    runner.cancel = async (jobID: string) => {
+      await origCancel(jobID);
+      runner.exits.get(jobID)?.(null);
+      // Let the exit dispatch chain run while the cancel handler is still
+      // between dispose() and registry.cancel().
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    await expect(plugin.handlers.cancel('bg_1', userCtx('s1'))).resolves.toContain('cancelled');
+    expect(runner.cancelled).toEqual(['bg_1']);
+  });
+
   it('background reports once on process exit', async () => {
     const runner = new FakeRunner();
     const notified: AutoSubmitRequest[] = [];

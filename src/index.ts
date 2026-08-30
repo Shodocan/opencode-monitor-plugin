@@ -420,8 +420,14 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       }
       const status = registry.get(jobID);
       if (!status || !runtime) throw new Error(`job ${jobID} not found`);
-      await runtime.dispose?.();
+      // Transition to 'cancelled' BEFORE awaiting the kill: the runner resolves
+      // its exitPromise chain as the SIGTERM'd child dies, so the background
+      // exit dispatch (registry.complete) can land while we are still inside
+      // dispose(). complete()/fail() only act on active entries, so marking the
+      // job cancelled first makes the concurrent exit transition a no-op instead
+      // of racing us into "cannot be cancelled (status: completed)".
       registry.cancel(jobID);
+      await runtime.dispose?.();
       runtimes.delete(jobID);
       emitStatus();
       return formatCancel(jobID, status.kind).text;
