@@ -1,0 +1,7 @@
+{
+  "oldSha256": "3069077e2c14f991f87444f8c5314cec75f87d414d6fe4dd98df3ab8028a0b93",
+  "newSha256": "89e6f5ded9715e1a89241ee56a23cba475f5a82d8c5af3456fbe03f9961376c6",
+  "test": "test/process-runner.test.ts",
+  "adjudication": "compatibility_audit approved narrow owned-process fixture hygiene; original tail-clearing assertion unchanged",
+  "scope": "Finished-job dispose API tested after captured owned exit instead of orphaning detached sleep60. No source or accepted regression changes."
+}

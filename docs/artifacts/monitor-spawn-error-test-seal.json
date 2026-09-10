@@ -1,0 +1,8 @@
+{
+  "test": "test/process-runner-spawn-error.test.ts",
+  "sha256": "33146384fc1096e846bc2646468ef0e9314cea1b0e6566aa8558e0529017c28f",
+  "expectedRed": "one behavioral failure: unhandled child error instead of owned startup rejection",
+  "authorRedLog": "/tmp/monitor-spawn-error-author-red.log",
+  "sourceBaseline": "00177b900b0959cf012d8ac8511765d4bd51f559",
+  "priorFourteenSealsUnchanged": true
+}

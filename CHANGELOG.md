@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-09-10
+
+### Fixed
+- Dedicated `dist/server.js` runtime entry prevents helper exports from creating
+  duplicate bridges and tool registrations. Programmatic helper exports remain
+  available from the package root. Update configured server paths when upgrading.
+- Native `dispose()` and its `__stop()` alias fence new jobs and await owned
+  processes, pending deliveries and file writes. Failed jobs retain process
+  ownership until close; disposal leaves other instances running.
+- Serialize status and tail writes so older writes cannot restore stale state.
+- Concurrent process cancellation joins the same captured close, clears the
+  grace timer and escalates when a surviving descendant retains output pipes.
+- Asynchronous spawn errors reject the captured completion instead of raising an
+  unhandled child-process event.
+
 ## [1.2.2] - 2026-08-30
 
 ### Fixed

@@ -1,0 +1,22 @@
+{
+  "sealedAt": "2026-09-10T02:36:58.851525+00:00",
+  "baseline": "00177b900b0959cf012d8ac8511765d4bd51f559",
+  "tests": {
+    "test/monitor-disposal-lifecycle.test.ts": "6e77a2117b972aa1811f68ea453c6eab7a799e567585741ee5064df1e9c0c812",
+    "test/process-runner-cancel-ownership.test.ts": "d44fd8c6441f7173d18e01da01118d60edb24539bac0c9fa41f49ecd7a3c124f",
+    "test/native-public-server.acceptance.mjs": "4746a2f30a045c57b4569e9006ba85e688c2cd4e98a51c65b465ccae4348cc34"
+  },
+  "sourceUnchanged": true,
+  "unitCommand": "npm test -- --run test/monitor-disposal-lifecycle.test.ts test/process-runner-cancel-ownership.test.ts",
+  "nativeCommand": "node test/native-public-server.acceptance.mjs --binary /tmp/native-release-v4.3.0.1/opencode --package /tmp/monitor-v4.3.1",
+  "authorBehavioralRed": {
+    "unitLog": "/tmp/monitor-ownership-author-final-red.log",
+    "failed": 14,
+    "passed": 0,
+    "nativeLog": "/tmp/monitor-native-entry-author-red.log",
+    "nativeReceipt": "/tmp/monitor-native-server-J0jn7j/receipt.json",
+    "factoryStarts": 2,
+    "monitorToolIDs": 12
+  },
+  "presealTimingNote": "Real descendant case total test ceiling changed from7s to12s after RED without changing the 5700ms physical-close assertion (grace5000+700); accommodates its independent readiness/cleanup budgets. Independent RED must use this final seal."
+}

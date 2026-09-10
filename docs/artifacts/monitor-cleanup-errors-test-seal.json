@@ -1,0 +1,17 @@
+{
+  "sealedAt": "2026-09-10T02:52:36.276451+00:00",
+  "tests": {
+    "test/monitor-cleanup-failure.test.ts": "cc5346ac01d68e2a1d7f80efd85aee554eb4d6415500590994bd162012b18989",
+    "test/process-runner-established-error.test.ts": "908562ec80b4bb673ebf529c6778897403068935a1a85b0a15277ff82c9c8024"
+  },
+  "sourceBeforeRepair": {
+    "src/index.ts": "6300a4a29d0b39ddfbbe0cf82bbc9a405fc08220b69cdf963ed8219c19edd1ad",
+    "src/runner/process-runner.ts": "6dc4687621795c36b19adcf880bad4139401d6424e8b21de1829abd63a29e3dd"
+  },
+  "command": "npm test -- --run test/monitor-cleanup-failure.test.ts test/process-runner-established-error.test.ts",
+  "authorBehavioralRed": "/tmp/monitor-cleanup-failure-author-final-red.log",
+  "failed": 2,
+  "passed": 0,
+  "draftFixtureFailure": "/tmp/monitor-cleanup-failure-author-red.log first draft used nonexisting opencode_monitor_bg; corrected before seal to actual public opencode_monitor_background. Not counted as behavior RED.",
+  "priorSealsUnchanged": true
+}

@@ -262,9 +262,10 @@ describe('ProcessRunner', () => {
 
   // -- Dispose ------------------------------------------------
 
-  it('dispose clears handles', () => {
+  it('dispose clears handles', async () => {
     const id = 'ds_1';
-    runner.run(id, 'sleep 60');
+    const { exitPromise } = runner.run(id, 'printf ordinary-fixture');
+    await exitPromise;
     runner.dispose(id);
     expect(runner.tail(id, 'stdout')).toEqual([]);
   });
