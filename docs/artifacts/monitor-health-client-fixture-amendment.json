@@ -1,0 +1,9 @@
+{
+  "oldSha256": "6e77a2117b972aa1811f68ea453c6eab7a799e567585741ee5064df1e9c0c812",
+  "newSha256": "1660e8d2087e36f9731f3363b5896cd136caf19febbef5aca13452b798b02b9b",
+  "adjudication": "compatibility_audit independently approved replacement of one test-owned undici client with agent:false http.get; exact HTTP200 and timer0 assertions unchanged",
+  "probe": "/tmp/monitor-v431-timer-probe.log",
+  "originalSeal": "docs/artifacts/monitor-release-tests-seal.json",
+  "baseline": "00177b900b0959cf012d8ac8511765d4bd51f559",
+  "baselineDirectory": "/tmp/monitor-corrected-test-baseline-b743xb6m"
+}

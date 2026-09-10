@@ -1,0 +1,25 @@
+--- sealed/monitor-disposal-lifecycle.test.ts
++++ corrected/monitor-disposal-lifecycle.test.ts
+@@ -1,4 +1,5 @@
+ import { EventEmitter } from 'node:events';
++import { get as httpGet } from 'node:http';
+ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+@@ -173,7 +174,15 @@
+     expect(one.promptAsync).not.toHaveBeenCalled(); expect(two.promptAsync).toHaveBeenCalledTimes(1);
+     expect(await readFile(process.env.OPENCODE_MONITOR_BRIDGE_CONFIG!, 'utf8')).toBe(currentConfig);
+     const bridge = await readBridgeConfig();
+-    expect((await fetch(bridge.url + '/health')).status).toBe(200);
++    const healthStatus = await new Promise<number>((resolve, reject) => {
++      const request = httpGet(bridge.url + '/health', { agent: false }, (response) => {
++        response.on('error', reject);
++        response.on('end', () => resolve(response.statusCode ?? 0));
++        response.resume();
++      });
++      request.on('error', reject);
++    });
++    expect(healthStatus).toBe(200);
+     await dispose(two.result); expect(vi.getTimerCount()).toBe(0);
+   });
+ 

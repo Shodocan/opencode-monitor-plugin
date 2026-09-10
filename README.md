@@ -47,14 +47,14 @@ Slash commands are prompt templates that instruct the model to call the matching
 
 Use this section when adding the plugin to an OpenCode harness/config repository. Run `npm install` from the same directory that owns the `opencode.json` and `tui.json` files, because the config examples below use relative `./node_modules/...` paths. For the default global OpenCode config, that directory is `~/.config/opencode`.
 
-### 1. Install package from GitHub
+### 1. Install the pinned package
 
 ```bash
 cd ~/.config/opencode
-npm install github:Shodocan/opencode-monitor-plugin
+npm install opencode-monitor-plugin@1.2.3
 ```
 
-This is a GitHub npm dependency. It is not published to the npm registry yet.
+The package is published to npm. Shared harnesses should pin an exact release.
 
 Pin a branch, tag, or commit in shared harnesses when reproducibility matters:
 
@@ -63,13 +63,13 @@ cd ~/.config/opencode
 npm install github:Shodocan/opencode-monitor-plugin#<tag-or-commit>
 ```
 
-The GitHub install runs `npm run prepare`, which builds `dist/`.
+GitHub source installs run `npm run prepare`, which builds `dist/`; npm releases include the compiled entries.
 
 Use direct installed file paths in OpenCode config. Bare package subpaths like `opencode-monitor-plugin/tui` can be treated by OpenCode as packages to install, so GitHub-installed packages should be referenced through `./node_modules/...` from the config directory.
 
 Installed entrypoints:
 
-- `./node_modules/opencode-monitor-plugin/dist/index.js` -> server plugin.
+- `./node_modules/opencode-monitor-plugin/dist/server.js` -> server plugin.
 - `./node_modules/opencode-monitor-plugin/dist/tui.js` -> TUI plugin (precompiled Solid universal ESM).
 
 **Why `dist/tui.js` instead of `src/tui.tsx`:** OpenTUI 0.4+ does not Solid-transform package sources under `node_modules`; this package ships a precompiled Solid universal ESM entry at `dist/tui.js`.
@@ -82,10 +82,15 @@ Add the server entrypoint to the normal OpenCode config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "./node_modules/opencode-monitor-plugin/dist/index.js"
+    "./node_modules/opencode-monitor-plugin/dist/server.js"
   ]
 }
 ```
+
+The server entry exports one runtime factory. Keep programmatic helper imports at
+`opencode-monitor-plugin` (`dist/index.js`); that helper module is not the runtime
+configuration entry. When upgrading from 1.2.2, change an existing configured
+`dist/index.js` path to `dist/server.js` as well as updating the package pin.
 
 ### 3. Register TUI plugin in `tui.json`
 
@@ -131,6 +136,16 @@ The plugin sends delivery requests to a local bridge. The bridge tracks opencode
 
 The bridge delivers through hidden-transport visible synthetic prompts with `{ text, sessionID, visible: true }`. Visible synthetic prompts render with the opencode-injected header `◇ MCP · <server-name>`; clients do not provide the caller name. It rechecks session status before each queued delivery. `/loop` uses latest-only coalescing and adds coalesced tick metadata; `/background`, `/monitor`, and `/schedule` retain full payloads subject to caps. The plugin must not use visible prompt append for queued output, because append mutates the user's prompt input.
 
+## Instance disposal
+
+Native instance disposal stops admission immediately and cancels only that instance's
+background jobs, monitors, schedules and loops. It waits for process closure, already
+started deliveries and status/tail writes before returning. Jobs are in memory and
+do not survive disposal. The final status marks the bridge down; other instances
+remain operational. Programmatic callers can await `plugin.dispose()`; server hooks
+provide `dispose()` and the compatible `__stop()` alias. Cleanup failures reject the
+disposal promise.
+
 ## Bridge config
 
 `BridgeServer` writes a bearer-token config file to:
@@ -149,7 +164,7 @@ Security constraints:
 
 ## Local development installation
 
-Build the package and register the server plugin entry from `dist/index.js` in opencode config:
+Build the package and register the server plugin entry from `dist/server.js` in opencode config:
 
 ```bash
 npm install
@@ -161,7 +176,7 @@ Example opencode config fragment:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./dist/index.js"]
+  "plugin": ["./dist/server.js"]
 }
 ```
 

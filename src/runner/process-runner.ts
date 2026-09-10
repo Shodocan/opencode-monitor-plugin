@@ -69,8 +69,8 @@ export interface ProcessRunnerEvents {
 interface ProcessHandle {
   process: ChildProcess;
   exitPromise: Promise<number | null>;
-  cancelPending: boolean;
-  cancelled: boolean;
+  closed: boolean;
+  cancellation?: Promise<void>;
 }
 
 export class ProcessRunner extends EventEmitter {
@@ -103,8 +103,16 @@ export class ProcessRunner extends EventEmitter {
     // Create the exit promise BEFORE attaching any listeners — avoids the
     // "fast process exits before handler attached" race. Use `close`, not
     // `exit`, so stdout/stderr have ended and final partial lines are flushed.
-    const exitPromise = new Promise<number | null>((resolve) => {
+    const exitPromise = new Promise<number | null>((resolve, reject) => {
+      child.on('error', (error) => {
+        // A spawn failure has no process. Later signal/IPC errors do not prove
+        // that an established child (or its output-owning group) has closed.
+        if (child.pid === undefined) reject(error);
+        else monitorDebug('runner.error', { jobID, pid: child.pid, error: error.message });
+      });
       child.once('close', (code, signal) => {
+        const handle = this.#handles.get(jobID);
+        if (handle?.process === child) handle.closed = true;
         monitorDebug('runner.close', { jobID, pid: child.pid, code, signal });
         resolve(code);
       });
@@ -122,37 +130,29 @@ export class ProcessRunner extends EventEmitter {
    *
    * Returns a promise that resolves when the process has actually exited.
    */
-  async cancel(jobID: string): Promise<void> {
+  cancel(jobID: string): Promise<void> {
     const handle = this.#handles.get(jobID);
     if (!handle) {
-      throw new ProcessRunnerError(`job ${jobID} not found`);
+      return Promise.reject(new ProcessRunnerError(`job ${jobID} not found`));
     }
-    if (handle.cancelled) {
-      return; // already done
-    }
-    handle.cancelled = true;
-
-    // Phase 1 — SIGTERM
-    this.#killGroup(handle.process, 'SIGTERM');
-
-    // Phase 2 — SIGKILL after grace period
-    await Promise.race([
-      handle.exitPromise.then(() => {}),
-      new Promise<void>((r) => setTimeout(r, CANCEL_SIGKILL_TIMEOUT_MS)),
-    ]);
-
-    if (handle.cancelPending) {
-      // Still alive — bump it with SIGKILL
-      this.#killGroup(handle.process, 'SIGKILL');
-      // Final fallback: direct kill
+    if (handle.cancellation) return handle.cancellation;
+    if (handle.closed) return handle.cancellation = handle.exitPromise.then(() => {});
+    handle.cancellation = (async () => {
+      this.#killGroup(handle.process, 'SIGTERM');
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        handle.process.kill('SIGKILL');
-      } catch {
-        /* process already gone */
+        const closed = await Promise.race([
+          handle.exitPromise.then(() => true),
+          new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), CANCEL_SIGKILL_TIMEOUT_MS); }),
+        ]);
+        // Shell exit is insufficient: descendants may still own the output pipes.
+        if (!closed) this.#killGroup(handle.process, 'SIGKILL');
+        await handle.exitPromise;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
-    }
-
-    await handle.exitPromise;
+    })();
+    return handle.cancellation;
   }
 
   /**
@@ -179,18 +179,12 @@ export class ProcessRunner extends EventEmitter {
       ['stderr', new TailBuffer(PROCESS_OUTPUT_CAP_LINES, PROCESS_OUTPUT_CAP_BYTES)],
     ]);
 
-    this.#handles.set(jobID, { process: child, exitPromise, cancelPending: true, cancelled: false });
+    this.#handles.set(jobID, { process: child, exitPromise, closed: false });
     this.#tails.set(jobID, tails);
 
     void this.#drainStream(jobID, child.stdout!, 'stdout', tails);
     void this.#drainStream(jobID, child.stderr!, 'stderr', tails);
 
-    child.on('exit', () => {
-      const h = this.#handles.get(jobID);
-      if (h?.cancelPending) {
-        h.cancelPending = false;
-      }
-    });
   }
 
   #drainStream(

@@ -1,0 +1,9 @@
+{
+  "test": "test/process-runner-closed-child.test.ts",
+  "sha256": "e83a0a0cc1eb21ae52c5ea91c7cc74a4beb601224ff4a29fcb9807b45d498220",
+  "sourceBeforeRepair": "afa96cec56d7d49902a1a5c9e91398971289116c9c9a12591a52f777b8d2c057",
+  "authorRedLog": "/tmp/monitor-closed-child-author-red.log",
+  "failed": 1,
+  "passed": 0,
+  "priorSealsUnchanged": true
+}

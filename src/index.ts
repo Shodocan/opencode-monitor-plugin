@@ -49,6 +49,8 @@ export interface MonitorPluginDependencies {
 }
 
 export interface MonitorPlugin {
+  dispose(): Promise<void>;
+  getStatus(): MonitorIndicatorSnapshot;
   registerCommands(ctx: PluginContext): void;
   handlers: Record<string, CommandHandler>;
   getScheduledPending: () => number;
@@ -109,6 +111,17 @@ interface JobRuntime {
   dispose?: () => void | Promise<void>;
 }
 
+// Keep ownership until the entire continuation settles, including work it starts.
+function track<T>(pending: Set<Promise<unknown>>, operation: Promise<T>): Promise<T> {
+  pending.add(operation);
+  void operation.then(() => pending.delete(operation), () => pending.delete(operation));
+  return operation;
+}
+
+async function drain(pending: Set<Promise<unknown>>): Promise<void> {
+  while (pending.size) await Promise.allSettled([...pending]);
+}
+
 function windowToText(window: MonitorWindow): string {
   const matchList = window.matchSeqs.length > 0 ? window.matchSeqs.join(', ') : 'none';
   const lines = [
@@ -132,21 +145,47 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   const health = deps.health ?? bridgeHealth;
   const now = deps.now ?? (() => new Date());
   const runtimes = new Map<string, JobRuntime>();
+  // A failed public job may still own a live process; status is not ownership.
+  const owned = new Map<string, JobRuntime>();
+  const pending = new Set<Promise<unknown>>();
+  const exits = new Map<string, Promise<unknown>>();
+  const cleanupFailed = new Set<string>();
+  const tailWrites = new Map<string, Promise<void>>();
+  let closing = false;
+  let disposal: Promise<void> | undefined;
+  let writeError: unknown;
   const tailJobs = new Set<string>(); // jobIDs that have output tails (bg, mon)
   const tailWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  const assertOpen = () => {
+    if (closing) throw new Error('opencode-monitor plugin is disposed');
+  };
+  const trackExit = (jobID: string, operation: Promise<unknown>) => {
+    exits.set(jobID, operation);
+    void operation.then(() => exits.delete(jobID), () => exits.delete(jobID));
+  };
+  const queueTail = (jobID: string, write: () => Promise<void>) => {
+    const operation = (tailWrites.get(jobID) ?? Promise.resolve()).then(write).catch((error) => {
+      writeError ??= error;
+      monitorDebug('tail.write.error', { jobID, error: error instanceof Error ? error.message : String(error) });
+    });
+    tailWrites.set(jobID, operation);
+    track(pending, operation);
+    void operation.then(() => { if (tailWrites.get(jobID) === operation) tailWrites.delete(jobID); });
+  };
+
   const flushTail = (jobID: string) => {
+    if (closing) return;
     const scope = deps.statusScope ?? process.cwd();
     const stdoutLines = runner.tail(jobID, 'stdout').map((line) => ({ stream: 'stdout', line }));
     const stderrLines = runner.tail(jobID, 'stderr').map((line) => ({ stream: 'stderr', line }));
     const allLines = [...stdoutLines, ...stderrLines].slice(-3);
     const truncated = allLines.length >= 3;
-    void writeMonitorTail(scope, jobID, allLines, truncated).catch((error) => {
-      monitorDebug('tail.write.error', { jobID, error: error instanceof Error ? error.message : String(error) });
-    });
+    queueTail(jobID, () => writeMonitorTail(scope, jobID, allLines, truncated));
   };
 
   const scheduleTailWrite = (jobID: string) => {
+    if (closing) return;
     if (!tailJobs.has(jobID)) return;
     const existing = tailWriteTimers.get(jobID);
     if (existing) return; // already scheduled within debounce window
@@ -162,10 +201,10 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
     if (timer) { clearTimeout(timer); tailWriteTimers.delete(jobID); }
     tailJobs.delete(jobID);
     const scope = deps.statusScope ?? process.cwd();
-    void removeMonitorTail(scope, jobID);
+    queueTail(jobID, () => removeMonitorTail(scope, jobID));
   };
 
-  const emitStatus = () => {
+  const getStatus = (): MonitorIndicatorSnapshot => {
     const timestamp = Date.now();
     const allJobs = registry.list();
     const completedCount = allJobs.filter((j) => j.status === 'completed').length;
@@ -175,12 +214,12 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       version: 2,
       updatedAt: timestamp,
       jobs: allJobs
-        .filter((job) => runtimes.has(job.jobID))
+        .filter((job) => runtimes.has(job.jobID) || (closing && owned.has(job.jobID)))
         .map((job) => ({
           jobID: job.jobID,
           kind: job.kind,
-          sessionID: runtimes.get(job.jobID)!.sessionID,
-          status: job.status,
+          sessionID: (runtimes.get(job.jobID) ?? owned.get(job.jobID))!.sessionID,
+          status: cleanupFailed.has(job.jobID) ? 'failed' : job.status,
           startedAt: timestamp,
           updatedAt: timestamp,
           createdAt: job.createdAt,
@@ -196,23 +235,32 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       failedCount,
       scheduledPending: deps.getScheduledPending?.() ?? 0,
     };
+    return snapshot;
+  };
+  const emitStatus = () => {
+    if (closing) return;
+    const snapshot = getStatus();
     monitorDebug('plugin.status.emit', { jobs: snapshot.jobs.length, queueDepth: snapshot.queueDepth, bridgeUp: snapshot.bridgeUp });
     deps.onStatusChange?.(snapshot);
   };
 
-  const deliver = async (request: AutoSubmitRequest, preformatted = false): Promise<void> => {
-    const text = preformatted || request.kind === 'loop' || request.kind === 'sched'
-      ? request.text
-      : formatAutoSubmit(request);
-    monitorDebug('plugin.deliver.start', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID, textPreview: text.slice(0, 120) });
-    await notify({ ...request, text });
-    monitorDebug('plugin.deliver.ok', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID });
-    registry.updateDeliveryStatus(request.jobID, 'sent');
-    if (request.kind === 'sched') {
-      registry.complete(request.jobID);
-      runtimes.delete(request.jobID);
-      emitStatus();
-    }
+  const deliver = (request: AutoSubmitRequest, preformatted = false): Promise<void> => {
+    if (closing) return Promise.resolve();
+    return track(pending, (async () => {
+      const text = preformatted || request.kind === 'loop' || request.kind === 'sched'
+        ? request.text
+        : formatAutoSubmit(request);
+      monitorDebug('plugin.deliver.start', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID, textPreview: text.slice(0, 120) });
+      await notify({ ...request, text });
+      monitorDebug('plugin.deliver.ok', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID });
+      registry.updateDeliveryStatus(request.jobID, 'sent');
+      if (request.kind === 'sched') {
+        registry.complete(request.jobID);
+        runtimes.delete(request.jobID);
+        owned.delete(request.jobID);
+        emitStatus();
+      }
+    })());
   };
 
   const scheduler = deps.scheduler ?? new PromptScheduler({
@@ -220,12 +268,20 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
   });
 
   const ensureBridgeAvailable = async (): Promise<void> => {
+    assertOpen();
     await health();
+    assertOpen();
   };
 
   const registerRuntime = (jobID: string, sessionID: string, kind: JobKind, dispose?: JobRuntime['dispose']) => {
     monitorDebug('plugin.job.register', { jobID, kind, sessionID });
-    runtimes.set(jobID, { sessionID, kind, dispose });
+    let stopped: Promise<void> | undefined;
+    const runtime: JobRuntime = { sessionID, kind, dispose: () => {
+      if (!stopped) stopped = Promise.resolve().then(() => dispose?.());
+      return stopped;
+    } };
+    runtimes.set(jobID, runtime);
+    owned.set(jobID, runtime);
     emitStatus();
   };
 
@@ -256,19 +312,20 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           if (event.jobID === jobID) scheduleTailWrite(jobID);
         };
         runner.on?.('output', bgOutputHandler);
-        void handle.exitPromise.then(async (code) => {
+        trackExit(jobID, handle.exitPromise.then(async (code) => {
           monitorDebug('plugin.background.runner.exit', { jobID, sessionID, code });
           try {
             flushTail(jobID);
             const formatted = formatDelivery(backgroundText(jobID, code, runner)).text;
             await deliver({ sessionID, agent, jobID, kind: 'bg', text: formatted, submit: true }, true);
-            registry.complete(jobID);
+            if (!closing) registry.complete(jobID);
           } catch (error) {
             failJob(jobID, error);
           } finally {
             if (bgOutputHandler) runner.off?.('output', bgOutputHandler);
             runner.dispose(jobID);
             runtimes.delete(jobID);
+            owned.delete(jobID);
             cleanupTail(jobID);
             emitStatus();
           }
@@ -277,11 +334,13 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           if (bgOutputHandler) runner.off?.('output', bgOutputHandler);
           runner.dispose(jobID);
           runtimes.delete(jobID);
+          owned.delete(jobID);
           cleanupTail(jobID);
           emitStatus();
-        });
+        }));
       } catch (error) {
         runtimes.delete(jobID);
+        owned.delete(jobID);
         cleanupTail(jobID);
         registry.fail(jobID);
         emitStatus();
@@ -317,10 +376,13 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         if (outputHandler && runner.off) runner.off('output', outputHandler);
         runner.dispose(jobID);
         runtimes.delete(jobID);
+        owned.delete(jobID);
         cleanupTail(jobID);
         emitStatus();
       };
       registerRuntime(jobID, sessionID, 'mon', async () => {
+        engine?.destroy();
+        if (outputHandler && runner.off) runner.off('output', outputHandler);
         await runner.cancel(jobID);
         cleanup();
       });
@@ -349,15 +411,15 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         runner.on?.('output', outputHandler);
         const handle = runner.run(jobID, parsed.command);
         monitorDebug('plugin.monitor.runner.started', { jobID, sessionID });
-        void handle.exitPromise.then((code) => {
+        trackExit(jobID, handle.exitPromise.then((code) => {
           monitorDebug('plugin.monitor.runner.exit', { jobID, sessionID, code });
           engine?.flush();
-          registry.complete(jobID);
+          if (!closing) registry.complete(jobID);
           cleanup();
         }).catch((error) => {
           failJob(jobID, error);
           cleanup();
-        });
+        }));
       } catch (error) {
         cleanup();
         registry.fail(jobID);
@@ -379,6 +441,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         scheduler.scheduleLoop({ jobID, sessionID, agent, intervalMs: parsed.intervalMs, prompt: parsed.prompt });
       } catch (error) {
         runtimes.delete(jobID);
+        owned.delete(jobID);
         registry.fail(jobID);
         emitStatus();
         throw error;
@@ -397,6 +460,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
         scheduler.scheduleOnce({ jobID, sessionID, agent, runAt: parsed.runAt, prompt: parsed.prompt });
       } catch (error) {
         runtimes.delete(jobID);
+        owned.delete(jobID);
         registry.fail(jobID);
         emitStatus();
         throw error;
@@ -429,16 +493,61 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       registry.cancel(jobID);
       await runtime.dispose?.();
       runtimes.delete(jobID);
+      if (runtime.kind === 'loop' || runtime.kind === 'sched') owned.delete(jobID);
       emitStatus();
       return formatCancel(jobID, status.kind).text;
     },
   };
 
+  // Fence synchronously, before any awaited command admission can resume.
+  const dispose = (): Promise<void> => {
+    if (disposal) return disposal;
+    closing = true;
+    for (const timer of tailWriteTimers.values()) clearTimeout(timer);
+    tailWriteTimers.clear();
+    disposal = (async () => {
+      const captured = [...owned];
+      const capturedExits = [...exits];
+      const results = await Promise.allSettled(captured.map(async ([jobID, runtime]) => {
+        await runtime.dispose?.();
+        if (registry.get(jobID)?.status === 'active') registry.cancel(jobID);
+        runtimes.delete(jobID);
+        owned.delete(jobID);
+      }));
+      const errors: unknown[] = [];
+      results.forEach((result, index) => {
+        if (result.status !== 'rejected') return;
+        const jobID = captured[index]![0];
+        cleanupFailed.add(jobID);
+        registry.fail(jobID);
+        errors.push(result.reason);
+      });
+      // Failed cancellation retains ownership. Its unresolved exit must not
+      // prevent independent cleanup or hide the failure behind an endless wait.
+      await Promise.allSettled(capturedExits.filter(([jobID]) => !cleanupFailed.has(jobID)).map(([, exit]) => exit));
+      await drain(pending);
+      for (const jobID of [...tailJobs]) if (!cleanupFailed.has(jobID)) cleanupTail(jobID);
+      await drain(pending);
+      if (writeError) errors.push(writeError);
+      if (errors.length) throw new AggregateError(errors, `opencode-monitor disposal failed; unresolved jobs: ${[...cleanupFailed].join(', ') || 'none'}`);
+    })();
+    return disposal;
+  };
+  const guardedHandlers = Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, (raw: string, ctx: PluginContext) => {
+    try {
+      assertOpen();
+      return track(pending, handler(raw, ctx));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }]));
   return {
-    handlers,
+    dispose,
+    getStatus,
+    handlers: guardedHandlers,
     getScheduledPending: () => scheduler.pendingCount,
     registerCommands(ctx: PluginContext): void {
-      for (const [name, handler] of Object.entries(handlers)) {
+      for (const [name, handler] of Object.entries(guardedHandlers)) {
         ctx.registerSlashCommand(name, handler);
       }
     },
@@ -507,29 +616,37 @@ function sessionStatusFromEventStatus(status: unknown): 'idle' | 'busy' | 'retry
   return undefined;
 }
 
-function armIdleFallback(bridge: BridgeServer, sessionID: string): void {
-  setTimeout(() => {
-    monitorDebug('server.idleFallback.fire', { sessionID });
-    bridge.setSessionStatus(sessionID, 'idle');
-  }, 1500).unref?.();
-}
-
 export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   const statusScope = input.worktree || input.directory || process.cwd();
-  monitorDebug('server.start', { statusScope, directory: input.directory, worktree: input.worktree, hasClientPromptAsync: Boolean(input.client?.session?.promptAsync), hasServerUrl: Boolean(input.serverUrl) });
-  const publishStatus = (snapshot: MonitorIndicatorSnapshot) => {
-    monitorDebug('server.status.write.request', { statusScope, jobs: snapshot.jobs.map((job) => ({ jobID: job.jobID, kind: job.kind, sessionID: job.sessionID, status: job.status })) });
-    void writeMonitorStatus(statusScope, snapshot).catch((error) => {
+  let closing = false;
+  let disposal: Promise<void> | undefined;
+  const deliveries = new Set<Promise<unknown>>();
+  const idleTimers = new Set<ReturnType<typeof setTimeout>>();
+  let statusWrites = Promise.resolve();
+  let statusError: unknown;
+  const assertOpen = () => {
+    if (closing) throw new Error('opencode-monitor server is disposed');
+  };
+  const queueStatus = (snapshot: MonitorIndicatorSnapshot) => {
+    statusWrites = statusWrites.then(() => writeMonitorStatus(statusScope, snapshot)).catch((error) => {
+      statusError ??= error;
       console.error('opencode-monitor status write failed', error instanceof Error ? error.message : String(error));
     });
   };
+  monitorDebug('server.start', { statusScope, directory: input.directory, worktree: input.worktree, hasClientPromptAsync: Boolean(input.client?.session?.promptAsync), hasServerUrl: Boolean(input.serverUrl) });
+  const publishStatus = (snapshot: MonitorIndicatorSnapshot) => {
+    if (closing) return;
+    monitorDebug('server.status.write.request', { statusScope, jobs: snapshot.jobs.map((job) => ({ jobID: job.jobID, kind: job.kind, sessionID: job.sessionID, status: job.status })) });
+    queueStatus(snapshot);
+  };
   const bridge = new BridgeServer({
     onAppend: (payload) => {
+      if (closing) return false;
       monitorDebug('server.bridge.onAppend', { jobID: payload.jobID, kind: payload.kind, sessionID: payload.params.sessionID, method: payload.method });
-      void submitVisibleSyntheticPrompt(input, payload).catch((error) => {
+      track(deliveries, submitVisibleSyntheticPrompt(input, payload).catch((error) => {
         monitorDebug('server.bridge.onAppend.error', { jobID: payload.jobID, error: error instanceof Error ? error.message : String(error) });
         console.error('opencode-monitor prompt delivery failed', error instanceof Error ? error.message : String(error));
-      });
+      }));
       return true;
     },
   });
@@ -551,12 +668,42 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
   const scheduledPendingTimer = setInterval(() => { scheduledPendingHolder.value = plugin.getScheduledPending(); }, 1000);
   scheduledPendingTimer.unref?.();
   publishStatus({ version: 2, updatedAt: Date.now(), jobs: [], queueDepth: 0, dedupedCount: 0, coalescedTicks: 0, bridgeUp: true, queueDropped: 0, completedCount: 0, failedCount: 0, scheduledPending: 0 });
+  const armIdleFallback = (sessionID: string) => {
+    if (closing) return;
+    const timer = setTimeout(() => {
+      idleTimers.delete(timer);
+      if (closing) return;
+      monitorDebug('server.idleFallback.fire', { sessionID });
+      bridge.setSessionStatus(sessionID, 'idle');
+    }, 1500);
+    idleTimers.add(timer);
+    timer.unref?.();
+  };
+  const dispose = (): Promise<void> => {
+    if (disposal) return disposal;
+    closing = true;
+    clearInterval(scheduledPendingTimer);
+    for (const timer of idleTimers) clearTimeout(timer);
+    idleTimers.clear();
+    disposal = (async () => {
+      const errors: unknown[] = [];
+      try { await plugin.dispose(); } catch (error) { errors.push(error); }
+      await drain(deliveries);
+      try {
+        await bridge.stop();
+        queueStatus({ ...plugin.getStatus(), updatedAt: Date.now(), queueDepth: 0, bridgeUp: false, scheduledPending: 0 });
+      } catch (error) { errors.push(error); }
+      await statusWrites;
+      if (statusError) errors.push(statusError);
+      if (errors.length) throw new AggregateError(errors, 'opencode-monitor server disposal failed');
+    })();
+    return disposal;
+  };
   return {
-    __stop: async () => {
-      clearInterval(scheduledPendingTimer);
-      await bridge.stop();
-    },
+    dispose,
+    __stop: dispose,
     event: async ({ event }: { event: { type?: string; properties?: Record<string, unknown> } }) => {
+      if (closing) return;
       if (event.type === 'session.status') {
         const sessionID = event.properties?.sessionID;
         const status = sessionStatusFromEventStatus(event.properties?.status);
@@ -584,12 +731,13 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Start a shell command in the background. Returns immediately with the job ID; final output is delivered to the session when idle.',
         args: { command: tool.schema.string().describe('Command to run via /bin/sh -c') },
         async execute(args, context) {
+          assertOpen();
           monitorDebug('tool.background.execute', { sessionID: context.sessionID, command: args.command });
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
             return await plugin.handlers.background(args.command, toolPluginContext(context.sessionID, context.agent));
           } finally {
-            armIdleFallback(bridge, context.sessionID);
+            armIdleFallback(context.sessionID);
           }
         },
       }),
@@ -597,12 +745,13 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Start a monitored shell command. Raw args use /monitor syntax, including --regex and command after --.',
         args: { raw: tool.schema.string().describe('Raw /monitor arguments') },
         async execute(args, context) {
+          assertOpen();
           monitorDebug('tool.monitor.execute', { sessionID: context.sessionID, raw: args.raw });
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
             return await plugin.handlers.monitor(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
-            armIdleFallback(bridge, context.sessionID);
+            armIdleFallback(context.sessionID);
           }
         },
       }),
@@ -610,11 +759,12 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Start a prompt loop. Raw args use /loop syntax: <interval> <prompt>.',
         args: { raw: tool.schema.string().describe('Raw /loop arguments') },
         async execute(args, context) {
+          assertOpen();
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
             return await plugin.handlers.loop(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
-            armIdleFallback(bridge, context.sessionID);
+            armIdleFallback(context.sessionID);
           }
         },
       }),
@@ -622,11 +772,12 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Schedule one prompt. Raw args use /schedule syntax: in <duration> <prompt> or at <iso-date> <prompt>.',
         args: { raw: tool.schema.string().describe('Raw /schedule arguments') },
         async execute(args, context) {
+          assertOpen();
           bridge.setSessionStatus(context.sessionID, 'busy');
           try {
             return await plugin.handlers.schedule(args.raw, toolPluginContext(context.sessionID, context.agent));
           } finally {
-            armIdleFallback(bridge, context.sessionID);
+            armIdleFallback(context.sessionID);
           }
         },
       }),
@@ -634,6 +785,7 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'List opencode-monitor jobs owned by the current session.',
         args: {},
         async execute(_args, context) {
+          assertOpen();
           return plugin.handlers.jobs('', toolPluginContext(context.sessionID, context.agent));
         },
       }),
@@ -641,6 +793,7 @@ export const server = async (input: OpencodePluginInput = {}): Promise<any> => {
         description: 'Cancel an opencode-monitor job owned by the current session.',
         args: { jobID: tool.schema.string().describe('Job ID to cancel') },
         async execute(args, context) {
+          assertOpen();
           return plugin.handlers.cancel(args.jobID, toolPluginContext(context.sessionID, context.agent));
         },
       }),

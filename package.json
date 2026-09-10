@@ -1,6 +1,6 @@
 {
   "name": "opencode-monitor-plugin",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "OpenCode background, monitor, loop, and schedule job plugin with TUI status indicator. Requires och (custom opencode build with MCP/TUI integrations).",
   "type": "module",
   "license": "MIT",
@@ -22,7 +22,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./server": "./dist/index.js",
+    "./server": "./dist/server.js",
     "./tui": {
       "types": "./dist/tui.d.ts",
       "import": "./dist/tui.js"
