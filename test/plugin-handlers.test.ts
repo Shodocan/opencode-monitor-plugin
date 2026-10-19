@@ -422,6 +422,33 @@ describe('plugin command handlers', () => {
     expect(notified[0].text).toContain('background bg_1 exited');
   });
 
+  it('background killed without an exit code is not reported as a trigger', async () => {
+    const runner = new FakeRunner();
+    const notified: AutoSubmitRequest[] = [];
+    const plugin = createMonitorPlugin({ runner, health: async () => undefined, notify: async (request) => { notified.push(request); } });
+
+    await plugin.handlers.background('sleep 99', userCtx('s1'));
+    runner.exits.get('bg_1')?.(null);
+    await vi.waitFor(() => expect(notified).toHaveLength(1));
+
+    expect(notified[0].text).toContain('monitor job ended without a trigger.');
+    expect(notified[0].text).not.toContain('monitor triggered.');
+  });
+
+  it('a cancelled background job delivers nothing when its process exit lands late', async () => {
+    const runner = new FakeRunner();
+    const notified: AutoSubmitRequest[] = [];
+    const plugin = createMonitorPlugin({ runner, health: async () => undefined, notify: async (request) => { notified.push(request); } });
+
+    await plugin.handlers.background('sleep 99', userCtx('s1'));
+    const reply = await plugin.handlers.cancel('bg_1', userCtx('s1'));
+    runner.exits.get('bg_1')?.(null);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(reply).not.toContain('monitor triggered.');
+    expect(notified).toHaveLength(0);
+  });
+
   it('background startup failure does not leave an active job', async () => {
     const runner = new FakeRunner();
     runner.throwOnRun = true;

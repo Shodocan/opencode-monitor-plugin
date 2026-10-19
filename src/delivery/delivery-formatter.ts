@@ -12,6 +12,10 @@ export function generateNonce(): string {
 // Constants
 // ----------------------------------------------------------------
 const DIRECTIVE = 'monitor triggered.';
+// Tool replies (jobs listing, cancel) and ended jobs are not triggers: a distinct
+// header keeps them from reading as a real monitor match.
+const STATUS_DIRECTIVE = 'monitor job status.';
+const ENDED_DIRECTIVE = 'monitor job ended without a trigger.';
 
 // ----------------------------------------------------------------
 // ANSI / control-char sanitizer
@@ -126,7 +130,7 @@ const DEFAULT_OPTIONS: FormatterOptions = {
  *  - `commandPreview` / `promptPreview`: truncated previews (≤200 chars)
  *  - Untrusted output is always wrapped in a nonce-delimited block with a status label.
  */
-export function formatDelivery(raw: string, opts?: FormatterOptions): FormattedDelivery {
+export function formatDelivery(raw: string, opts?: FormatterOptions & { ended?: boolean }): FormattedDelivery {
   const { nonce = generateNonce(), maxPreviewLen = DEFAULT_MAX_PREVIEW } = { ...DEFAULT_OPTIONS, ...opts };
 
   const sanitized = sanitize(raw);
@@ -135,7 +139,7 @@ export function formatDelivery(raw: string, opts?: FormatterOptions): FormattedD
   // Build the delivery text: nonce fence → directive → content → nonce fence
   const text = [
     nonce,
-    DIRECTIVE,
+    opts?.ended ? ENDED_DIRECTIVE : DIRECTIVE,
     redacted,
     nonce,
   ].join('\n');
@@ -184,7 +188,7 @@ export function formatJobs(jobs: JobStatus[], opts?: FormatterOptions): Formatte
   const body = parts.join('\n');
   const text = [
     nonce,
-    DIRECTIVE,
+    STATUS_DIRECTIVE,
     body,
     nonce,
   ].join('\n');
@@ -202,7 +206,7 @@ export function formatJobs(jobs: JobStatus[], opts?: FormatterOptions): Formatte
 export function formatCancel(jobID: string, kind: string, opts?: FormatterOptions): FormattedDelivery {
   const { nonce = generateNonce() } = { ...DEFAULT_OPTIONS, ...opts };
   const body = `${jobID} (${kindLabel(kind)}) → cancelled`;
-  const text = [nonce, DIRECTIVE, body, nonce].join('\n');
+  const text = [nonce, STATUS_DIRECTIVE, body, nonce].join('\n');
 
   return {
     text,

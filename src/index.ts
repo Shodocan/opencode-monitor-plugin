@@ -250,7 +250,12 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
       const text = preformatted || request.kind === 'loop' || request.kind === 'sched'
         ? request.text
         : formatAutoSubmit(request);
-      monitorDebug('plugin.deliver.start', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID, textPreview: text.slice(0, 120) });
+      // A cancelled job never triggers: its late exit or queued match is dropped.
+    if ((request.kind === 'bg' || request.kind === 'mon') && registry.get(request.jobID)?.status === 'cancelled') {
+      monitorDebug('plugin.deliver.dropped-cancelled', { jobID: request.jobID, kind: request.kind });
+      return;
+    }
+    monitorDebug('plugin.deliver.start', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID, textPreview: text.slice(0, 120) });
       await notify({ ...request, text });
       monitorDebug('plugin.deliver.ok', { jobID: request.jobID, kind: request.kind, sessionID: request.sessionID });
       registry.updateDeliveryStatus(request.jobID, 'sent');
@@ -316,7 +321,7 @@ export function createMonitorPlugin(deps: MonitorPluginDependencies = {}): Monit
           monitorDebug('plugin.background.runner.exit', { jobID, sessionID, code });
           try {
             flushTail(jobID);
-            const formatted = formatDelivery(backgroundText(jobID, code, runner)).text;
+            const formatted = formatDelivery(backgroundText(jobID, code, runner), { ended: code === null }).text;
             await deliver({ sessionID, agent, jobID, kind: 'bg', text: formatted, submit: true }, true);
             if (!closing) registry.complete(jobID);
           } catch (error) {

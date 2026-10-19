@@ -228,6 +228,14 @@ describe('formatAutoSubmit', () => {
   });
 });
 
+describe('formatDelivery ended jobs', () => {
+  it('marks a terminated job as ended, not as a trigger', () => {
+    const text = formatDelivery('background bg_2 exited with code null', { ended: true }).text;
+    expect(text).toContain('monitor job ended without a trigger.');
+    expect(text).not.toContain('monitor triggered.');
+  });
+});
+
 describe('formatJobs', () => {
   it('lists all jobs with kind and status', () => {
     const jobs: JobStatus[] = [
@@ -239,11 +247,12 @@ describe('formatJobs', () => {
     expect(result.text).toContain('j2 (monitor) → failed');
   });
 
-  it('includes directive and nonce fences', () => {
+  it('uses the status header, never the trigger directive, inside nonce fences', () => {
     const jobs: JobStatus[] = [{ jobID: 'x', kind: 'loop', status: 'completed' }];
     const lines = formatJobs(jobs).text.split('\n');
     expect(lines[0]).toMatch(/^[0-9a-f]{32}$/);
-    expect(lines[1]).toBe('monitor triggered.');
+    expect(lines[1]).toBe('monitor job status.');
+    expect(formatJobs(jobs).text).not.toContain('monitor triggered.');
   });
 });
 
@@ -260,9 +269,10 @@ describe('formatCancel', () => {
     expect(lines[lines.length - 1]).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it('includes directive', () => {
+  it('uses the status header, never the trigger directive', () => {
     const result = formatCancel('j', 'sched');
-    expect(result.text).toContain('monitor triggered.');
+    expect(result.text).toContain('monitor job status.');
+    expect(result.text).not.toContain('monitor triggered.');
   });
 
   it('accepts opts with injectable nonce', () => {
